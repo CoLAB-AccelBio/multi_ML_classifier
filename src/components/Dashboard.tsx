@@ -7,8 +7,9 @@ import {
   Shuffle, 
   Users, 
   Settings, 
-  Download,
-  ArrowLeft 
+  ArrowLeft,
+  Grid3X3,
+  TrendingUp
 } from "lucide-react";
 import { MetricCard } from "./MetricCard";
 import { ModelComparisonChart } from "./ModelComparisonChart";
@@ -16,6 +17,10 @@ import { FeatureImportanceChart } from "./FeatureImportanceChart";
 import { PermutationTestingPanel } from "./PermutationTestingPanel";
 import { ProfileRankingTable } from "./ProfileRankingTable";
 import { ConfigSummary } from "./ConfigSummary";
+import { ConfusionMatrixChart } from "./ConfusionMatrixChart";
+import { ROCCurveChart } from "./ROCCurveChart";
+import { ReportExport } from "./ReportExport";
+import { ThemeToggle } from "./ThemeToggle";
 import type { MLResults } from "@/types/ml-results";
 
 interface DashboardProps {
@@ -26,7 +31,6 @@ interface DashboardProps {
 export function Dashboard({ data, onReset }: DashboardProps) {
   const [metricFilter, setMetricFilter] = useState<"accuracy" | "auroc" | "f1_score" | "balanced_accuracy">("auroc");
   
-  // Find best model
   const bestModel = Object.entries(data.model_performance)
     .filter(([, metrics]) => metrics?.auroc)
     .sort((a, b) => (b[1]!.auroc!.mean || 0) - (a[1]!.auroc!.mean || 0))[0];
@@ -43,7 +47,6 @@ export function Dashboard({ data, onReset }: DashboardProps) {
 
   return (
     <div className="min-h-screen bg-background">
-      {/* Header */}
       <header className="sticky top-0 z-50 bg-background/80 backdrop-blur-lg border-b border-border">
         <div className="container mx-auto px-4 py-4">
           <div className="flex items-center justify-between">
@@ -59,10 +62,10 @@ export function Dashboard({ data, onReset }: DashboardProps) {
               </div>
             </div>
             
-            <Button variant="outline" size="sm">
-              <Download className="w-4 h-4 mr-2" />
-              Export Report
-            </Button>
+            <div className="flex items-center gap-2">
+              <ThemeToggle />
+              <ReportExport data={data} />
+            </div>
           </div>
         </div>
       </header>
@@ -133,7 +136,6 @@ export function Dashboard({ data, onReset }: DashboardProps) {
           </div>
         )}
 
-        {/* Configuration Summary */}
         <ConfigSummary 
           metadata={data.metadata} 
           selectedFeatures={data.selected_features || []} 
@@ -141,31 +143,39 @@ export function Dashboard({ data, onReset }: DashboardProps) {
 
         {/* Main Tabs */}
         <Tabs defaultValue="performance" className="space-y-6">
-          <TabsList className="bg-muted/50 p-1">
+          <TabsList className="bg-muted/50 p-1 flex-wrap h-auto">
             <TabsTrigger value="performance" className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
               <BarChart3 className="w-4 h-4 mr-2" />
-              Model Performance
+              Performance
+            </TabsTrigger>
+            <TabsTrigger value="confusion" className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
+              <Grid3X3 className="w-4 h-4 mr-2" />
+              Confusion Matrix
+            </TabsTrigger>
+            <TabsTrigger value="roc" className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
+              <TrendingUp className="w-4 h-4 mr-2" />
+              ROC Curves
             </TabsTrigger>
             <TabsTrigger value="features" className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
               <Brain className="w-4 h-4 mr-2" />
-              Feature Importance
+              Features
             </TabsTrigger>
             <TabsTrigger value="permutation" className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
               <Shuffle className="w-4 h-4 mr-2" />
-              Permutation Testing
+              Permutation
             </TabsTrigger>
             <TabsTrigger value="rankings" className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
               <Users className="w-4 h-4 mr-2" />
-              Profile Rankings
+              Rankings
             </TabsTrigger>
             <TabsTrigger value="config" className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
               <Settings className="w-4 h-4 mr-2" />
-              Configuration
+              Config
             </TabsTrigger>
           </TabsList>
 
           <TabsContent value="performance" className="space-y-6">
-            <div className="flex gap-2 mb-4">
+            <div className="flex gap-2 mb-4 flex-wrap">
               {(["auroc", "accuracy", "f1_score", "balanced_accuracy"] as const).map((m) => (
                 <Button
                   key={m}
@@ -223,6 +233,30 @@ export function Dashboard({ data, onReset }: DashboardProps) {
                   </div>
                 ))}
             </div>
+          </TabsContent>
+
+          <TabsContent value="confusion">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+              {Object.entries(data.model_performance)
+                .filter(([, metrics]) => metrics?.confusion_matrix)
+                .map(([model, metrics]) => (
+                  <ConfusionMatrixChart
+                    key={model}
+                    data={metrics!.confusion_matrix!}
+                    modelName={modelLabels[model] || model}
+                  />
+                ))}
+            </div>
+            {!Object.values(data.model_performance).some(m => m?.confusion_matrix) && (
+              <div className="bg-card rounded-xl p-12 border border-border text-center">
+                <Grid3X3 className="w-12 h-12 text-muted-foreground mx-auto mb-4" />
+                <p className="text-muted-foreground">No confusion matrix data available. Try the demo mode or ensure your R script exports confusion matrices.</p>
+              </div>
+            )}
+          </TabsContent>
+
+          <TabsContent value="roc">
+            <ROCCurveChart performance={data.model_performance} />
           </TabsContent>
 
           <TabsContent value="features">

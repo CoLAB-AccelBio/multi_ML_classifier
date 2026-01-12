@@ -8,6 +8,19 @@ export interface MetricStats {
   max: number;
 }
 
+export interface ConfusionMatrixData {
+  tp: number;
+  tn: number;
+  fp: number;
+  fn: number;
+}
+
+export interface ROCPoint {
+  fpr: number;
+  tpr: number;
+  threshold?: number;
+}
+
 export interface ModelMetrics {
   accuracy?: MetricStats;
   sensitivity?: MetricStats;
@@ -17,6 +30,8 @@ export interface ModelMetrics {
   balanced_accuracy?: MetricStats;
   auroc?: MetricStats;
   kappa?: MetricStats;
+  confusion_matrix?: ConfusionMatrixData;
+  roc_curve?: ROCPoint[];
 }
 
 export interface ModelPerformance {
@@ -68,6 +83,8 @@ export interface MLResultsConfig {
   n_permutations: number;
   rf_ntree: number;
   xgb_nrounds: number;
+  expression_matrix_file?: string;
+  annotation_file?: string;
 }
 
 export interface MLResultsMetadata {

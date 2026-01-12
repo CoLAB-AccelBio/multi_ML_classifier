@@ -2,8 +2,10 @@ import { useState } from "react";
 import { FileUploader } from "@/components/FileUploader";
 import { Dashboard } from "@/components/Dashboard";
 import { Button } from "@/components/ui/button";
-import { Brain, Download, Github, FileCode2, Sparkles } from "lucide-react";
+import { ThemeToggle } from "@/components/ThemeToggle";
+import { Brain, Download, Github, FileCode2, Sparkles, Play } from "lucide-react";
 import type { MLResults } from "@/types/ml-results";
+import { demoData } from "@/data/demoData";
 
 const Index = () => {
   const [data, setData] = useState<MLResults | null>(null);
@@ -14,6 +16,11 @@ const Index = () => {
 
   return (
     <div className="min-h-screen bg-background relative overflow-hidden">
+      {/* Theme Toggle */}
+      <div className="absolute top-4 right-4 z-20">
+        <ThemeToggle />
+      </div>
+
       {/* Background gradient effects */}
       <div className="absolute inset-0 overflow-hidden pointer-events-none">
         <div className="absolute top-0 left-1/4 w-[600px] h-[600px] bg-primary/5 rounded-full blur-[120px]" />
@@ -46,6 +53,15 @@ const Index = () => {
                 Download R Script
               </Button>
             </a>
+            <Button 
+              size="lg" 
+              variant="secondary" 
+              className="gap-2"
+              onClick={() => setData(demoData)}
+            >
+              <Play className="w-5 h-5" />
+              Try Demo
+            </Button>
             <a 
               href="https://github.com/drzeeshanahmed/intelligenes" 
               target="_blank" 
@@ -73,8 +89,8 @@ const Index = () => {
         {/* Features Grid */}
         <div className="grid md:grid-cols-3 gap-6 max-w-5xl mx-auto mb-16">
           <div className="bg-card/50 backdrop-blur-sm rounded-xl p-6 border border-border hover:border-primary/30 transition-all group">
-            <div className="w-12 h-12 rounded-lg bg-chart-rf/20 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
-              <Brain className="w-6 h-6 text-chart-rf" />
+            <div className="w-12 h-12 rounded-lg bg-accent/20 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
+              <Brain className="w-6 h-6 text-accent" />
             </div>
             <h3 className="text-lg font-semibold mb-2">5 ML Methods</h3>
             <p className="text-sm text-muted-foreground">
@@ -83,8 +99,8 @@ const Index = () => {
           </div>
 
           <div className="bg-card/50 backdrop-blur-sm rounded-xl p-6 border border-border hover:border-primary/30 transition-all group">
-            <div className="w-12 h-12 rounded-lg bg-chart-svm/20 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
-              <FileCode2 className="w-6 h-6 text-chart-svm" />
+            <div className="w-12 h-12 rounded-lg bg-secondary/20 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
+              <FileCode2 className="w-6 h-6 text-secondary" />
             </div>
             <h3 className="text-lg font-semibold mb-2">Feature Selection</h3>
             <p className="text-sm text-muted-foreground">
@@ -93,8 +109,8 @@ const Index = () => {
           </div>
 
           <div className="bg-card/50 backdrop-blur-sm rounded-xl p-6 border border-border hover:border-primary/30 transition-all group">
-            <div className="w-12 h-12 rounded-lg bg-chart-xgb/20 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
-              <Sparkles className="w-6 h-6 text-chart-xgb" />
+            <div className="w-12 h-12 rounded-lg bg-warning/20 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
+              <Sparkles className="w-6 h-6 text-warning" />
             </div>
             <h3 className="text-lg font-semibold mb-2">Permutation Testing</h3>
             <p className="text-sm text-muted-foreground">
@@ -109,7 +125,7 @@ const Index = () => {
           <div className="grid md:grid-cols-4 gap-4">
             {[
               { step: 1, title: "Download", desc: "Get the R script" },
-              { step: 2, title: "Prepare", desc: "Format your data as CSV" },
+              { step: 2, title: "Prepare", desc: "Expression matrix + annotations" },
               { step: 3, title: "Run", desc: "Execute the R pipeline" },
               { step: 4, title: "Visualize", desc: "Upload JSON results here" },
             ].map(({ step, title, desc }) => (
