@@ -60,20 +60,15 @@ const Index = () => {
 
       <div className="relative z-10 container mx-auto px-4 py-16">
         <div className="text-center max-w-4xl mx-auto mb-16">
-          <div className="inline-flex items-center gap-2 px-4 py-2 bg-primary/10 rounded-full mb-6 border border-primary/20">
-            <Sparkles className="w-4 h-4 text-primary" />
-            <span className="text-sm text-primary font-medium">IntelliGenes-Style ML Classification</span>
-          </div>
-          
           <h1 className="text-5xl md:text-6xl font-bold mb-6">
             <span className="gradient-text">Multi-Method ML</span>
             <br />
-            <span className="text-foreground">Diagnostic Classifier</span>
+            <span className="text-foreground">Diagnostic and Prognostic Classifier</span>
           </h1>
           
           <p className="text-xl text-muted-foreground max-w-2xl mx-auto mb-8">
             Ensemble machine learning with Random Forest, SVM, XGBoost, KNN, and MLP. 
-            Includes permutation testing, feature selection, and profile ranking for robust diagnostic predictions.
+            Includes permutation testing, feature selection, and profile ranking for robust diagnostic and prognostic predictions.
           </p>
 
           <div className="flex flex-wrap justify-center gap-4 mb-12">

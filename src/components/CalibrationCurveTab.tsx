@@ -105,6 +105,15 @@ export function CalibrationCurveTab({ data }: CalibrationCurveTabProps) {
     return (ece / n / 100).toFixed(3);
   };
 
+  const modelColors: Record<string, string> = {
+    rf: "hsl(var(--primary))",
+    svm: "hsl(var(--secondary))",
+    xgboost: "hsl(var(--accent))",
+    knn: "hsl(var(--info))",
+    mlp: "hsl(var(--warning))",
+    ensemble: "hsl(var(--success))",
+  };
+
   const modelLabels: Record<string, string> = {
     rf: "Random Forest",
     svm: "SVM",

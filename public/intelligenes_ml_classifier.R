@@ -1,10 +1,10 @@
 #!/usr/bin/env Rscript
 # =============================================================================
-# IntelliGenes-Style Multi-Method ML Classifier
+# Multi-Method ML Diagnostic and Prognostic Classifier
 # =============================================================================
 # Implements various ML methods (RF, SVM, XGBoost, KNN, MLP) with voting
 # classifiers, feature selection, and permutation testing for robust
-# diagnostic prediction.
+# diagnostic and prognostic prediction.
 #
 # INPUT FILES:
 #   1. Expression matrix (tab-delimited .txt or .tsv)
@@ -321,6 +321,20 @@ load_data <- function(config) {
   sample_ids <- rownames(expr_matrix)
   X <- expr_matrix
   y <- as.factor(annotation[[config$target_variable]])
+  
+  # ==========================================================================
+  # PRE-FLIGHT DATA QUALITY CHECK: Require at least 2 classes
+  # ==========================================================================
+  n_classes <- length(levels(y))
+  if (n_classes < 2) {
+    stop(paste0(
+      "DATA QUALITY ERROR: Only ", n_classes, " class found after intersection ('",
+      paste(levels(y), collapse = ", "), "'). ",
+      "Binary classification requires at least 2 distinct classes in the target variable. ",
+      "Please verify your annotation file contains samples from both classes that match ",
+      "the sample IDs in the expression matrix."
+    ))
+  }
   
   # Ensure X is numeric
   X <- as.data.frame(lapply(X, function(x) {
@@ -649,6 +663,12 @@ run_cv_all_methods <- function(X, y, config, selected_features = NULL) {
   
   importance_scores <- list()
   
+  # Collect per-fold predictions for calibration curves export
+  cv_predictions <- list(rf = NULL, svm = NULL, xgboost = NULL, knn = NULL, mlp = NULL, soft_vote = NULL)
+  
+  # Collect per-fold importance for stability analysis
+  fold_importance <- list()
+  
   log_message(sprintf("Running %d-fold CV with %d repeats", config$n_folds, config$n_repeats))
   n_folds_total <- length(folds)
   
@@ -663,6 +683,12 @@ run_cv_all_methods <- function(X, y, config, selected_features = NULL) {
     
     # Show progress bar
     show_progress(i, n_folds_total, "CV Progress")
+    
+    # Skip fold if single class in training set
+    if (length(unique(as.character(y_train))) < 2) {
+      log_message(sprintf("Skipping fold %d: single class in training set", i), "WARN")
+      next
+    }
     
     models <- list(
       rf = tryCatch(train_rf(X_train, y_train, config), error = function(e) NULL),
@@ -682,7 +708,10 @@ run_cv_all_methods <- function(X, y, config, selected_features = NULL) {
       all_results$rf[[i]] <- calculate_metrics(y_test, preds$rf, probs$rf)
       if (!is.null(models$rf$importance)) {
         importance_scores[[length(importance_scores) + 1]] <- models$rf$importance
+        fold_importance[[length(fold_importance) + 1]] <- models$rf$importance
       }
+      # Collect for calibration
+      cv_predictions$rf <- rbind(cv_predictions$rf, data.frame(actual = as.character(y_test), prob = probs$rf))
     }
     
     if (!is.null(models$svm)) {
@@ -690,6 +719,7 @@ run_cv_all_methods <- function(X, y, config, selected_features = NULL) {
       preds$svm <- result$predictions
       probs$svm <- result$probabilities
       all_results$svm[[i]] <- calculate_metrics(y_test, preds$svm, probs$svm)
+      cv_predictions$svm <- rbind(cv_predictions$svm, data.frame(actual = as.character(y_test), prob = probs$svm))
     }
     
     if (!is.null(models$xgboost)) {
@@ -697,6 +727,7 @@ run_cv_all_methods <- function(X, y, config, selected_features = NULL) {
       preds$xgboost <- result$predictions
       probs$xgboost <- result$probabilities
       all_results$xgboost[[i]] <- calculate_metrics(y_test, preds$xgboost, probs$xgboost)
+      cv_predictions$xgboost <- rbind(cv_predictions$xgboost, data.frame(actual = as.character(y_test), prob = probs$xgboost))
     }
     
     if (!is.null(models$knn)) {
@@ -704,6 +735,7 @@ run_cv_all_methods <- function(X, y, config, selected_features = NULL) {
       preds$knn <- result$predictions
       probs$knn <- result$probabilities
       all_results$knn[[i]] <- calculate_metrics(y_test, preds$knn, probs$knn)
+      cv_predictions$knn <- rbind(cv_predictions$knn, data.frame(actual = as.character(y_test), prob = probs$knn))
     }
     
     if (!is.null(models$mlp)) {
@@ -711,6 +743,7 @@ run_cv_all_methods <- function(X, y, config, selected_features = NULL) {
       preds$mlp <- result$predictions
       probs$mlp <- result$probabilities
       all_results$mlp[[i]] <- calculate_metrics(y_test, preds$mlp, probs$mlp)
+      cv_predictions$mlp <- rbind(cv_predictions$mlp, data.frame(actual = as.character(y_test), prob = probs$mlp))
     }
     
     if (length(preds) > 1) {
@@ -720,6 +753,8 @@ run_cv_all_methods <- function(X, y, config, selected_features = NULL) {
       soft_result <- soft_voting(probs)
       all_results$soft_vote[[i]] <- calculate_metrics(y_test, soft_result$predictions, 
                                                        soft_result$probabilities)
+      cv_predictions$soft_vote <- rbind(cv_predictions$soft_vote, 
+                                         data.frame(actual = as.character(y_test), prob = soft_result$probabilities))
     }
   }
   
@@ -730,7 +765,12 @@ run_cv_all_methods <- function(X, y, config, selected_features = NULL) {
     feature_importance <- feature_importance[order(-feature_importance$importance), ]
   }
   
-  return(list(results = all_results, feature_importance = feature_importance))
+  return(list(
+    results = all_results, 
+    feature_importance = feature_importance,
+    cv_predictions = cv_predictions,
+    fold_importance = fold_importance
+  ))
 }
 
 # =============================================================================
@@ -1056,7 +1096,7 @@ run_pipeline <- function(config) {
 
   start_time <- Sys.time()
   log_message(paste(rep("=", 60), collapse = ""))
-  log_message("Starting IntelliGenes-Style ML Classification Pipeline")
+  log_message("Starting Multi-Method ML Diagnostic and Prognostic Classifier")
   if (config$analysis_mode == "fast") {
     log_message(">>> FAST ANALYSIS MODE (Testing Only) <<<", "WARN")
   }

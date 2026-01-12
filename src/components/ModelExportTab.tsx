@@ -36,7 +36,7 @@ export function ModelExportTab({ data }: ModelExportTabProps) {
 
   const rfCode = `# =============================================================================
 # Random Forest Prediction Script
-# Generated from IntelliGenes ML Classifier
+# Generated from Multi-Method ML Classifier
 # =============================================================================
 
 library(randomForest)
@@ -91,7 +91,7 @@ predict_new_samples_rf <- function(new_data, rf_model) {
 
   const svmCode = `# =============================================================================
 # SVM Prediction Script
-# Generated from IntelliGenes ML Classifier
+# Generated from Multi-Method ML Classifier
 # =============================================================================
 
 library(e1071)
@@ -139,7 +139,7 @@ predict_new_samples_svm <- function(new_data, svm_model) {
 
   const xgboostCode = `# =============================================================================
 # XGBoost Prediction Script
-# Generated from IntelliGenes ML Classifier
+# Generated from Multi-Method ML Classifier
 # =============================================================================
 
 library(xgboost)
@@ -183,7 +183,7 @@ predict_new_samples_xgboost <- function(new_data, xgb_model) {
 
   const ensembleCode = `# =============================================================================
 # Ensemble Prediction Script (All Models)
-# Generated from IntelliGenes ML Classifier
+# Generated from Multi-Method ML Classifier
 # =============================================================================
 
 library(randomForest)
