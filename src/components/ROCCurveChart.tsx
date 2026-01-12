@@ -12,6 +12,7 @@ import {
 } from "recharts";
 import { Button } from "@/components/ui/button";
 import { ThresholdSlider } from "./ThresholdSlider";
+import { ThresholdConfigManager } from "./ThresholdConfigManager";
 import type { ModelPerformance, ROCPoint } from "@/types/ml-results";
 
 interface ROCCurveChartProps {
@@ -231,10 +232,18 @@ export function ROCCurveChart({ performance }: ROCCurveChartProps) {
 
       {/* Threshold Sliders */}
       <div className="bg-card rounded-xl p-5 border border-border">
-        <h4 className="font-semibold mb-4">Interactive Threshold Analysis</h4>
-        <p className="text-sm text-muted-foreground mb-4">
-          Adjust the decision threshold for each model to see how sensitivity and specificity trade off at different cutoff points.
-        </p>
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h4 className="font-semibold">Interactive Threshold Analysis</h4>
+            <p className="text-sm text-muted-foreground mt-1">
+              Adjust the decision threshold for each model to see how sensitivity and specificity trade off at different cutoff points.
+            </p>
+          </div>
+          <ThresholdConfigManager
+            currentThresholds={thresholds}
+            onLoadConfig={setThresholds}
+          />
+        </div>
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {modelsWithROC
             .filter((model) => visibleModels.has(model))

@@ -16,6 +16,7 @@ import {
 } from "recharts";
 import { ArrowUp, ArrowDown, Minus } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { ComparisonReportExport } from "./ComparisonReportExport";
 import type { MLResults, ModelPerformance } from "@/types/ml-results";
 
 interface ComparisonDashboardProps {
@@ -101,6 +102,12 @@ export function ComparisonDashboard({ runA, runB }: ComparisonDashboardProps) {
 
   return (
     <div className="space-y-6">
+      {/* Header with export */}
+      <div className="flex items-center justify-between">
+        <h2 className="text-xl font-bold">Analysis Comparison</h2>
+        <ComparisonReportExport runA={runA} runB={runB} />
+      </div>
+
       {/* Header comparison */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div className="bg-primary/10 rounded-xl p-5 border border-primary/30">

@@ -95,6 +95,29 @@ log_message <- function(msg, level = "INFO") {
   cat(sprintf("[%s] %s: %s\n", timestamp, level, msg))
 }
 
+#' Display a text-based progress bar
+#' @param current Current iteration
+#' @param total Total iterations
+#' @param prefix Text to show before the bar
+#' @param width Width of the progress bar in characters
+show_progress <- function(current, total, prefix = "Progress", width = 40) {
+  pct <- current / total
+  filled <- floor(pct * width)
+  empty <- width - filled
+  bar <- paste0(
+    "\r", prefix, " [",
+    paste(rep("=", filled), collapse = ""),
+    ifelse(filled < width, ">", ""),
+    paste(rep(" ", max(0, empty - 1)), collapse = ""),
+    "] ",
+    sprintf("%3d%%", round(pct * 100)),
+    " (", current, "/", total, ")"
+  )
+  cat(bar)
+  if (current == total) cat("\n")
+  flush.console()
+}
+
 #' Read tab-delimited file (supports .txt and .tsv)
 read_tabular <- function(file_path) {
   if (!file.exists(file_path)) {
@@ -494,6 +517,7 @@ run_cv_all_methods <- function(X, y, config, selected_features = NULL) {
   importance_scores <- list()
   
   log_message(sprintf("Running %d-fold CV with %d repeats", config$n_folds, config$n_repeats))
+  n_folds_total <- length(folds)
   
   for (i in seq_along(folds)) {
     train_idx <- folds[[i]]
@@ -504,7 +528,8 @@ run_cv_all_methods <- function(X, y, config, selected_features = NULL) {
     y_train <- y[train_idx]
     y_test <- y[test_idx]
     
-    if (i %% 10 == 0) log_message(sprintf("  Fold %d/%d", i, length(folds)))
+    # Show progress bar
+    show_progress(i, n_folds_total, "CV Progress")
     
     models <- list(
       rf = tryCatch(train_rf(X_train, y_train, config), error = function(e) NULL),
@@ -592,7 +617,8 @@ run_permutation_test <- function(X, y, config, selected_features = NULL) {
   folds <- createFolds(y, k = config$n_folds)
   
   for (p in 1:n_permutations) {
-    if (p %% 10 == 0) log_message(sprintf("  Permutation %d/%d", p, n_permutations))
+    # Show progress bar
+    show_progress(p, n_permutations, "Permutation Testing")
     
     y_permuted <- sample(y)
     
