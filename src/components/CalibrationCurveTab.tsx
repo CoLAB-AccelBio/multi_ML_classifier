@@ -19,13 +19,41 @@ interface CalibrationPoint {
 }
 
 export function CalibrationCurveTab({ data }: CalibrationCurveTabProps) {
-  // Generate simulated calibration data based on model performance
-  // In real implementation, this would come from the R script
-  const generateCalibrationData = (): CalibrationPoint[] => {
+  const hasExported = !!data.calibration_curves && Object.keys(data.calibration_curves).length > 0;
+
+  const calibrationData: CalibrationPoint[] = (() => {
+    if (hasExported) {
+      // Normalize exported calibration curves into the chart shape.
+      const keys = ["rf", "svm", "xgboost", "knn", "mlp", "soft_vote"] as const;
+      const byModel = data.calibration_curves!;
+
+      // Build a union of bins based on soft_vote (preferred) or first available model
+      const base = byModel.soft_vote ?? byModel.rf ?? Object.values(byModel)[0] ?? [];
+
+      return base.map((p) => {
+        const getPct = (k: string) => {
+          const arr = (byModel as Record<string, any[]>)[k] ?? [];
+          const match = arr.find((x) => x.bin === (p as any).bin);
+          return match ? Number(match.frac_pos_pct) : null;
+        };
+
+        return {
+          binCenter: Number(p.mean_pred_pct.toFixed(1)),
+          rf: getPct("rf"),
+          svm: getPct("svm"),
+          xgboost: getPct("xgboost"),
+          knn: getPct("knn"),
+          mlp: getPct("mlp"),
+          ensemble: getPct("soft_vote"),
+          perfect: Number(p.mean_pred_pct.toFixed(1)),
+        };
+      });
+    }
+
+    // Fallback: simulated curves based on model accuracy
     const bins = 10;
     const points: CalibrationPoint[] = [];
-    
-    // Get model accuracies to simulate calibration quality
+
     const modelAccuracies = {
       rf: data.model_performance.rf?.accuracy?.mean || 0.8,
       svm: data.model_performance.svm?.accuracy?.mean || 0.75,
@@ -34,20 +62,17 @@ export function CalibrationCurveTab({ data }: CalibrationCurveTabProps) {
       mlp: data.model_performance.mlp?.accuracy?.mean || 0.78,
       ensemble: data.model_performance.soft_vote?.accuracy?.mean || 0.85,
     };
-    
+
     for (let i = 0; i < bins; i++) {
       const binCenter = (i + 0.5) / bins;
-      
-      // Simulate calibration based on model accuracy
-      // Better models are more calibrated (closer to perfect diagonal)
+
       const addNoise = (acc: number, center: number) => {
         const calibrationError = (1 - acc) * 0.3;
         const noise = (Math.random() - 0.5) * calibrationError;
-        // Models tend to be overconfident at high probabilities
         const overconfidence = center > 0.5 ? (center - 0.5) * 0.1 : 0;
         return Math.max(0, Math.min(1, center + noise - overconfidence));
       };
-      
+
       points.push({
         binCenter: parseFloat((binCenter * 100).toFixed(1)),
         rf: parseFloat((addNoise(modelAccuracies.rf, binCenter) * 100).toFixed(1)),
@@ -59,36 +84,25 @@ export function CalibrationCurveTab({ data }: CalibrationCurveTabProps) {
         perfect: parseFloat((binCenter * 100).toFixed(1)),
       });
     }
-    
+
     return points;
-  };
+  })();
 
   // Calculate Expected Calibration Error (ECE) for each model
-  const calculateECE = (modelKey: keyof Omit<CalibrationPoint, 'binCenter' | 'perfect'>) => {
-    const calibrationData = generateCalibrationData();
+  const calculateECE = (modelKey: keyof Omit<CalibrationPoint, "binCenter" | "perfect">) => {
     const n = calibrationData.length;
+    if (n === 0) return "-";
     let ece = 0;
-    
-    calibrationData.forEach(point => {
+
+    calibrationData.forEach((point) => {
       const predicted = point[modelKey];
       const actual = point.perfect;
       if (predicted !== null) {
         ece += Math.abs((predicted as number) - actual);
       }
     });
-    
+
     return (ece / n / 100).toFixed(3);
-  };
-
-  const calibrationData = generateCalibrationData();
-
-  const modelColors = {
-    rf: "hsl(var(--primary))",
-    svm: "hsl(var(--secondary))",
-    xgboost: "hsl(var(--accent))",
-    knn: "hsl(var(--info))",
-    mlp: "#f97316",
-    ensemble: "#10b981",
   };
 
   const modelLabels: Record<string, string> = {
@@ -106,10 +120,10 @@ export function CalibrationCurveTab({ data }: CalibrationCurveTabProps) {
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             Calibration Curves (Reliability Diagrams)
-            <Badge variant="outline" className="ml-2">Simulated</Badge>
+            <Badge variant="outline" className="ml-2">{hasExported ? "From analysis" : "Simulated"}</Badge>
           </CardTitle>
           <p className="text-sm text-muted-foreground">
-            Calibration curves show how well predicted probabilities match actual outcomes. 
+            Calibration curves show how well predicted probabilities match actual outcomes.
             A perfectly calibrated model follows the diagonal line.
           </p>
         </CardHeader>

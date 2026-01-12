@@ -22,6 +22,7 @@ import {
 import { MetricCard } from "./MetricCard";
 import { ModelComparisonChart } from "./ModelComparisonChart";
 import { FeatureImportanceChart } from "./FeatureImportanceChart";
+import { FeatureImportanceStabilityTab } from "./FeatureImportanceStabilityTab";
 import { PermutationTestingPanel } from "./PermutationTestingPanel";
 import { ProfileRankingTable } from "./ProfileRankingTable";
 import { ConfigSummary } from "./ConfigSummary";
@@ -311,7 +312,7 @@ export function Dashboard({ data, onReset }: DashboardProps) {
             <ROCCurveChart performance={data.model_performance} />
           </TabsContent>
 
-          <TabsContent value="features">
+          <TabsContent value="features" className="space-y-6">
             {data.feature_importance && data.feature_importance.length > 0 ? (
               <FeatureImportanceChart features={data.feature_importance} />
             ) : (
@@ -320,6 +321,8 @@ export function Dashboard({ data, onReset }: DashboardProps) {
                 <p className="text-muted-foreground">No feature importance data available</p>
               </div>
             )}
+
+            <FeatureImportanceStabilityTab data={data} />
           </TabsContent>
 
           <TabsContent value="permutation">

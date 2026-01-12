@@ -25,41 +25,39 @@ export function ClusteringVisualizationTab({ data }: ClusteringVisualizationTabP
   const [method, setMethod] = useState<MethodType>("pca");
   const [colorBy, setColorBy] = useState<"actual" | "predicted" | "correct">("actual");
 
-  // Generate simulated dimensionality reduction data
-  // In real implementation, this would come from the R script
+  const exportedPca = data.clustering?.pca?.points;
+  const exportedVariance = data.clustering?.pca?.variance_explained;
+
+  // Generate simulated dimensionality reduction data (fallback)
   const generateClusteringData = (methodType: MethodType): DataPoint[] => {
     const rankings = data.profile_ranking?.all_rankings || [];
     const n = Math.max(rankings.length, 50);
     const points: DataPoint[] = [];
-    
-    // Simulate two clusters based on class
-    const class0Center = methodType === "pca" ? { x: -2, y: -1 } : 
-                         methodType === "tsne" ? { x: -15, y: -10 } : 
-                         { x: -3, y: -2 };
-    const class1Center = methodType === "pca" ? { x: 2, y: 1 } : 
-                         methodType === "tsne" ? { x: 15, y: 10 } : 
-                         { x: 3, y: 2 };
-    
+
+    const class0Center = methodType === "pca" ? { x: -2, y: -1 } :
+      methodType === "tsne" ? { x: -15, y: -10 } :
+      { x: -3, y: -2 };
+    const class1Center = methodType === "pca" ? { x: 2, y: 1 } :
+      methodType === "tsne" ? { x: 15, y: 10 } :
+      { x: 3, y: 2 };
+
     const spread = methodType === "pca" ? 1.5 : methodType === "tsne" ? 8 : 2;
-    
-    // Get model accuracy to determine cluster separation
+
     const accuracy = data.model_performance.soft_vote?.accuracy?.mean || 0.8;
-    const separation = accuracy * 0.8 + 0.2; // Higher accuracy = better separation
-    
+    const separation = accuracy * 0.8 + 0.2;
+
     for (let i = 0; i < n; i++) {
       const ranking = rankings[i];
       const isClass1 = ranking ? ranking.actual_class === "1" : Math.random() > 0.5;
       const center = isClass1 ? class1Center : class0Center;
-      
-      // Add noise inversely proportional to separation
+
       const noiseX = (Math.random() - 0.5) * spread * (1 / separation);
       const noiseY = (Math.random() - 0.5) * spread * (1 / separation);
-      
-      // Misclassified samples appear in wrong cluster region
+
       const isMisclassified = ranking ? !ranking.correct : Math.random() > accuracy;
-      const effectiveCenter = isMisclassified ? 
+      const effectiveCenter = isMisclassified ?
         (isClass1 ? class0Center : class1Center) : center;
-      
+
       points.push({
         x: parseFloat((effectiveCenter.x + noiseX).toFixed(2)),
         y: parseFloat((effectiveCenter.y + noiseY).toFixed(2)),
@@ -70,17 +68,47 @@ export function ClusteringVisualizationTab({ data }: ClusteringVisualizationTabP
         correct: ranking?.correct ?? !isMisclassified,
       });
     }
-    
+
     return points;
   };
 
-  const clusteringData = generateClusteringData(method);
-  const class0Data = clusteringData.filter(d => d.actualClass === "Negative");
-  const class1Data = clusteringData.filter(d => d.actualClass === "Positive");
-  const correctData = clusteringData.filter(d => d.correct);
-  const incorrectData = clusteringData.filter(d => !d.correct);
-  const predictedClass0 = clusteringData.filter(d => d.predictedClass === "Negative");
-  const predictedClass1 = clusteringData.filter(d => d.predictedClass === "Positive");
+  const clusteringData: DataPoint[] = (() => {
+    if (method === "pca" && exportedPca && exportedPca.length > 0) {
+      const probBySample = new Map<number, { prob: number; pred: string; conf: number; correct: boolean; actual: string }>();
+      (data.profile_ranking?.all_rankings || []).forEach((r) => {
+        probBySample.set(r.sample_index, {
+          prob: r.ensemble_probability,
+          pred: r.predicted_class,
+          conf: r.confidence,
+          correct: r.correct,
+          actual: r.actual_class,
+        });
+      });
+
+      return exportedPca.map((p, idx) => {
+        const sampleIndex = idx + 1;
+        const r = probBySample.get(sampleIndex);
+        return {
+          x: Number(p.x.toFixed(2)),
+          y: Number(p.y.toFixed(2)),
+          sampleId: p.sample_id,
+          actualClass: p.actual_class,
+          predictedClass: r ? (r.pred === "1" ? "Positive" : "Negative") : "-",
+          confidence: r?.conf ?? 0,
+          correct: r?.correct ?? false,
+        };
+      });
+    }
+
+    return generateClusteringData(method);
+  })();
+
+  const class0Data = clusteringData.filter((d) => d.actualClass === "Negative" || d.actualClass === "0");
+  const class1Data = clusteringData.filter((d) => d.actualClass === "Positive" || d.actualClass === "1");
+  const correctData = clusteringData.filter((d) => d.correct);
+  const incorrectData = clusteringData.filter((d) => !d.correct);
+  const predictedClass0 = clusteringData.filter((d) => d.predictedClass === "Negative");
+  const predictedClass1 = clusteringData.filter((d) => d.predictedClass === "Positive");
 
   const getScatterData = () => {
     switch (colorBy) {
@@ -96,8 +124,8 @@ export function ClusteringVisualizationTab({ data }: ClusteringVisualizationTabP
         ];
       case "correct":
         return [
-          { data: correctData, name: "Correct", fill: "#10b981" },
-          { data: incorrectData, name: "Misclassified", fill: "#ef4444" },
+          { data: correctData, name: "Correct", fill: "hsl(var(--success))" },
+          { data: incorrectData, name: "Misclassified", fill: "hsl(var(--destructive))" },
         ];
     }
   };
@@ -122,8 +150,8 @@ export function ClusteringVisualizationTab({ data }: ClusteringVisualizationTabP
   };
 
   const varianceExplained = method === "pca" ? {
-    pc1: (Math.random() * 20 + 40).toFixed(1),
-    pc2: (Math.random() * 15 + 15).toFixed(1),
+    pc1: exportedVariance ? (exportedVariance.pc1 * 100).toFixed(1) : (Math.random() * 20 + 40).toFixed(1),
+    pc2: exportedVariance ? (exportedVariance.pc2 * 100).toFixed(1) : (Math.random() * 15 + 15).toFixed(1),
   } : null;
 
   return (
@@ -172,7 +200,9 @@ export function ClusteringVisualizationTab({ data }: ClusteringVisualizationTabP
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             Sample Clustering - {method.toUpperCase()}
-            <Badge variant="outline" className="ml-2">Simulated</Badge>
+            <Badge variant="outline" className="ml-2">
+              {method === "pca" && exportedPca && exportedPca.length > 0 ? "From analysis" : "Simulated"}
+            </Badge>
           </CardTitle>
           <p className="text-sm text-muted-foreground">
             Visualization of how samples cluster in reduced dimensional space using selected features.

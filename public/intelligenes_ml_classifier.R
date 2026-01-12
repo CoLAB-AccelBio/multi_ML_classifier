@@ -551,27 +551,40 @@ train_mlp <- function(X_train, y_train, config) {
 #' @param prob_matrix Probability matrix from model prediction
 #' @param target_class Target class column name (default "1")
 #' @return Vector of probabilities
-safe_get_prob <- function(prob_matrix, target_class = "1") {
-  if (is.null(prob_matrix)) return(rep(0.5, nrow(prob_matrix)))
-  
-  if (is.vector(prob_matrix)) return(prob_matrix)
-  
-  if (target_class %in% colnames(prob_matrix)) {
-    return(prob_matrix[, target_class])
-  } else if (ncol(prob_matrix) >= 2) {
-    # Assume second column is positive class
-    return(prob_matrix[, 2])
-  } else if (ncol(prob_matrix) == 1) {
-    return(prob_matrix[, 1])
-  } else {
-    return(rep(0.5, nrow(prob_matrix)))
+safe_get_prob <- function(prob_matrix, target_class = "1", n = NULL, default = 0.5) {
+  # If we have no probability output (e.g., model couldn't be trained), return a
+  # neutral probability vector of length n when possible.
+  if (is.null(prob_matrix)) {
+    if (!is.null(n) && n > 0) return(rep(default, n))
+    return(numeric(0))
   }
+
+  # Some predictors return a bare vector already
+  if (is.vector(prob_matrix)) {
+    return(as.numeric(prob_matrix))
+  }
+
+  if (!is.null(colnames(prob_matrix)) && target_class %in% colnames(prob_matrix)) {
+    return(as.numeric(prob_matrix[, target_class]))
+  }
+
+  if (ncol(prob_matrix) >= 2) {
+    # Common convention: second column is the positive class
+    return(as.numeric(prob_matrix[, 2]))
+  }
+
+  if (ncol(prob_matrix) == 1) {
+    return(as.numeric(prob_matrix[, 1]))
+  }
+
+  if (!is.null(n) && n > 0) return(rep(default, n))
+  return(numeric(0))
 }
 
 predict_rf <- function(model_obj, X_test) {
   pred <- predict(model_obj$model, X_test)
   prob_matrix <- predict(model_obj$model, X_test, type = "prob")
-  prob <- safe_get_prob(prob_matrix, "1")
+  prob <- safe_get_prob(prob_matrix, "1", n = nrow(X_test))
   return(list(predictions = pred, probabilities = prob))
 }
 
@@ -579,7 +592,7 @@ predict_svm <- function(model_obj, X_test) {
   pred <- predict(model_obj$model, as.matrix(X_test))
   prob_attr <- predict(model_obj$model, as.matrix(X_test), probability = TRUE)
   prob_matrix <- attr(prob_attr, "probabilities")
-  prob <- safe_get_prob(prob_matrix, "1")
+  prob <- safe_get_prob(prob_matrix, "1", n = nrow(X_test))
   return(list(predictions = pred, probabilities = prob))
 }
 
@@ -599,7 +612,7 @@ predict_knn <- function(model_obj, X_test) {
 
 predict_mlp <- function(model_obj, X_test) {
   prob_matrix <- predict(model_obj$model, as.matrix(X_test))
-  prob <- safe_get_prob(prob_matrix)
+  prob <- safe_get_prob(prob_matrix, n = nrow(X_test))
   pred <- factor(ifelse(prob > 0.5, "1", "0"), levels = c("0", "1"))
   return(list(predictions = pred, probabilities = prob))
 }
@@ -778,26 +791,42 @@ run_permutation_test <- function(X, y, config, selected_features = NULL) {
 
 rank_profiles <- function(X, y, models, config) {
   log_message("Ranking profiles by prediction confidence...")
-  
+
   all_probs <- list()
+
   if (!is.null(models$rf)) {
-    prob_matrix <- predict(models$rf$model, X, type = "prob")
-    all_probs$rf <- safe_get_prob(prob_matrix, "1")
+    prob_matrix <- tryCatch(predict(models$rf$model, X, type = "prob"), error = function(e) NULL)
+    all_probs$rf <- safe_get_prob(prob_matrix, "1", n = nrow(X))
   }
+
   if (!is.null(models$svm)) {
-    svm_pred <- predict(models$svm$model, as.matrix(X), probability = TRUE)
-    prob_matrix <- attr(svm_pred, "probabilities")
-    all_probs$svm <- safe_get_prob(prob_matrix, "1")
+    svm_pred <- tryCatch(predict(models$svm$model, as.matrix(X), probability = TRUE), error = function(e) NULL)
+    prob_matrix <- if (!is.null(svm_pred)) attr(svm_pred, "probabilities") else NULL
+    all_probs$svm <- safe_get_prob(prob_matrix, "1", n = nrow(X))
   }
-  if (!is.null(models$xgboost)) all_probs$xgboost <- predict(models$xgboost$model, as.matrix(X))
+
+  if (!is.null(models$xgboost)) {
+    prob_vec <- tryCatch(predict(models$xgboost$model, as.matrix(X)), error = function(e) NULL)
+    all_probs$xgboost <- safe_get_prob(prob_vec, n = nrow(X))
+  }
+
   if (!is.null(models$mlp)) {
-    prob_matrix <- predict(models$mlp$model, as.matrix(X))
-    all_probs$mlp <- safe_get_prob(prob_matrix)
+    prob_matrix <- tryCatch(predict(models$mlp$model, as.matrix(X)), error = function(e) NULL)
+    all_probs$mlp <- safe_get_prob(prob_matrix, n = nrow(X))
   }
-  
-  avg_prob <- rowMeans(do.call(cbind, all_probs), na.rm = TRUE)
+
+  # Keep only valid probability vectors with the expected length
+  all_probs <- Filter(function(v) is.numeric(v) && length(v) == nrow(X), all_probs)
+
+  avg_prob <- if (length(all_probs) == 0) {
+    log_message("No usable probability outputs for profile ranking; using neutral 0.5", "WARN")
+    rep(0.5, nrow(X))
+  } else {
+    as.numeric(rowMeans(do.call(cbind, all_probs), na.rm = TRUE))
+  }
+
   confidence <- abs(avg_prob - 0.5) * 2
-  
+
   ranking <- data.frame(
     sample_index = 1:nrow(X),
     actual_class = as.character(y),
@@ -806,13 +835,13 @@ rank_profiles <- function(X, y, models, config) {
     confidence = confidence,
     correct = as.character(y) == ifelse(avg_prob > 0.5, "1", "0")
   )
-  
+
   ranking <- ranking[order(-ranking$confidence), ]
   ranking$rank <- 1:nrow(ranking)
-  
+
   top_n <- ceiling(nrow(ranking) * (config$top_percent / 100))
   ranking$top_profile <- ranking$rank <= top_n
-  
+
   return(ranking)
 }
 
@@ -876,6 +905,95 @@ aggregate_results <- function(results_list) {
 }
 
 # =============================================================================
+# DERIVED EXPORTS (Calibration / Clustering / Stability)
+# =============================================================================
+
+compute_calibration_curve <- function(actual, prob, n_bins = 10) {
+  df <- data.frame(actual = as.character(actual), prob = as.numeric(prob))
+  df <- df[!is.na(df$prob), , drop = FALSE]
+  if (nrow(df) == 0) return(data.frame())
+
+  # Map actual to 0/1 when possible; otherwise treat the last factor level as "positive".
+  actual_factor <- factor(df$actual)
+  pos_level <- tail(levels(actual_factor), 1)
+  df$y01 <- ifelse(df$actual == pos_level, 1, 0)
+
+  df$bin <- cut(df$prob, breaks = seq(0, 1, length.out = n_bins + 1), include.lowest = TRUE)
+
+  agg <- df %>
+    group_by(bin) %>
+    summarise(
+      mean_pred = mean(prob, na.rm = TRUE),
+      frac_pos = mean(y01, na.rm = TRUE),
+      n = dplyr::n(),
+      .groups = "drop"
+    )
+
+  agg$bin_center <- (as.numeric(agg$mean_pred) * 100)
+  agg$mean_pred_pct <- as.numeric(agg$mean_pred) * 100
+  agg$frac_pos_pct <- as.numeric(agg$frac_pos) * 100
+
+  return(as.data.frame(agg))
+}
+
+compute_calibration_curves_from_cv <- function(cv_predictions, n_bins = 10) {
+  curves <- list()
+  for (name in names(cv_predictions)) {
+    df <- cv_predictions[[name]]
+    if (is.null(df) || nrow(df) == 0) next
+    curves[[name]] <- compute_calibration_curve(df$actual, df$prob, n_bins = n_bins)
+  }
+  return(curves)
+}
+
+compute_pca_embedding <- function(X, y, sample_ids = NULL) {
+  if (nrow(X) < 2) return(NULL)
+  pca <- tryCatch(prcomp(X, center = TRUE, scale. = FALSE), error = function(e) NULL)
+  if (is.null(pca)) return(NULL)
+
+  coords <- as.data.frame(pca$x[, 1:2, drop = FALSE])
+  colnames(coords) <- c("x", "y")
+  coords$sample_id <- if (!is.null(sample_ids)) sample_ids else rownames(X)
+  coords$actual_class <- as.character(y)
+
+  var_expl <- (pca$sdev^2) / sum(pca$sdev^2)
+  variance_explained <- list(pc1 = as.numeric(var_expl[1]), pc2 = as.numeric(var_expl[2]))
+
+  return(list(points = coords, variance_explained = variance_explained))
+}
+
+compute_feature_importance_stability <- function(fold_importance, top_n = 50) {
+  if (length(fold_importance) == 0) return(NULL)
+
+  # fold_importance is a list of named numeric vectors (RF importance)
+  feats <- unique(unlist(lapply(fold_importance, names)))
+  if (length(feats) == 0) return(NULL)
+
+  rank_mat <- sapply(fold_importance, function(imp) {
+    v <- imp[feats]
+    v[is.na(v)] <- -Inf
+    rank(-v, ties.method = "average")
+  })
+
+  mean_rank <- rowMeans(rank_mat, na.rm = TRUE)
+  sd_rank <- apply(rank_mat, 1, sd, na.rm = TRUE)
+
+  freq_top <- rowMeans(rank_mat <= top_n, na.rm = TRUE)
+
+  out <- data.frame(
+    feature = feats,
+    mean_rank = as.numeric(mean_rank),
+    sd_rank = as.numeric(sd_rank),
+    top_n_frequency = as.numeric(freq_top)
+  )
+
+  out <- out[order(out$mean_rank), ]
+  rownames(out) <- NULL
+
+  return(head(out, top_n))
+}
+
+# =============================================================================
 # JSON EXPORT
 # =============================================================================
 
@@ -892,6 +1010,9 @@ export_to_json <- function(results, config, output_path) {
     feature_importance = if (!is.null(results$feature_importance)) {
       head(results$feature_importance, 50)
     } else NULL,
+    feature_importance_stability = results$feature_importance_stability,
+    calibration_curves = results$calibration_curves,
+    clustering = results$clustering,
     permutation_testing = if (!is.null(results$permutation)) {
       list(
         rf_oob_error = list(
@@ -932,7 +1053,7 @@ run_pipeline <- function(config) {
   # Apply fast mode settings if enabled
 
   config <- get_effective_config(config)
-  
+
   start_time <- Sys.time()
   log_message(paste(rep("=", 60), collapse = ""))
   log_message("Starting IntelliGenes-Style ML Classification Pipeline")
@@ -940,35 +1061,39 @@ run_pipeline <- function(config) {
     log_message(">>> FAST ANALYSIS MODE (Testing Only) <<<", "WARN")
   }
   log_message(paste(rep("=", 60), collapse = ""))
-  
+
   if (!dir.exists(config$output_dir)) dir.create(config$output_dir, recursive = TRUE)
-  
+
   # Load data from expression matrix + annotation
   data <- load_data(config)
-  
+
   # Feature selection
   log_message(paste(rep("=", 60), collapse = ""))
   log_message("FEATURE SELECTION")
-  
+
   selected_features <- perform_feature_selection(
-    data$X, data$y, config$feature_selection_method, 
+    data$X, data$y, config$feature_selection_method,
     config$max_features, config$seed
   )
   log_message(sprintf("Selected %d features", length(selected_features)))
-  
+
   # Cross-validation
   log_message(paste(rep("=", 60), collapse = ""))
   log_message("CROSS-VALIDATION")
-  
+
   cv_results <- run_cv_all_methods(data$X, data$y, config, selected_features)
   summary <- aggregate_results(cv_results$results)
-  
+
+  # Derived exports from CV
+  calibration_curves <- compute_calibration_curves_from_cv(cv_results$cv_predictions, n_bins = 10)
+  feature_importance_stability <- compute_feature_importance_stability(cv_results$fold_importance, top_n = 50)
+
   # Train final models
   log_message(paste(rep("=", 60), collapse = ""))
   log_message("TRAINING FINAL MODELS")
-  
+
   X_selected <- data$X[, selected_features, drop = FALSE]
-  
+
   final_models <- list(
     rf = tryCatch(train_rf(X_selected, data$y, config), error = function(e) NULL),
     svm = tryCatch(train_svm(X_selected, data$y, config), error = function(e) NULL),
@@ -976,42 +1101,50 @@ run_pipeline <- function(config) {
     knn = tryCatch(train_knn(X_selected, data$y, config), error = function(e) NULL),
     mlp = tryCatch(train_mlp(X_selected, data$y, config), error = function(e) NULL)
   )
-  
+
   original_metrics <- list(
     rf_oob_error = if (!is.null(final_models$rf)) final_models$rf$oob_error else NA,
     rf_auroc = if (!is.null(summary$rf$auroc)) summary$rf$auroc$mean else NA
   )
-  
+
   # Permutation testing
   log_message(paste(rep("=", 60), collapse = ""))
   log_message("PERMUTATION TESTING")
-  
+
   permutation_results <- run_permutation_test(data$X, data$y, config, selected_features)
-  
+
   # Profile ranking
   log_message(paste(rep("=", 60), collapse = ""))
   log_message("PROFILE RANKING")
-  
+
   ranking <- rank_profiles(X_selected, data$y, final_models, config)
-  
+
+  # Clustering (PCA) export
+  clustering <- list(
+    pca = compute_pca_embedding(X_selected, data$y, sample_ids = data$sample_ids)
+  )
+
   # Export results
   results <- list(
     summary = summary,
     feature_importance = cv_results$feature_importance,
+    feature_importance_stability = feature_importance_stability,
+    calibration_curves = calibration_curves,
+    clustering = clustering,
     permutation = permutation_results,
     original_metrics = original_metrics,
     ranking = ranking,
     selected_features = selected_features,
     dataset_name = basename(config$expression_matrix_file)
   )
-  
+
   output_path <- file.path(config$output_dir, config$output_json)
   export_to_json(results, config, output_path)
-  
+
   end_time <- Sys.time()
-  log_message(sprintf("Pipeline completed in %.2f minutes", 
+  log_message(sprintf("Pipeline completed in %.2f minutes",
                       as.numeric(difftime(end_time, start_time, units = "mins"))))
-  
+
   return(invisible(results))
 }
 

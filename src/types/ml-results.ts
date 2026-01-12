@@ -49,6 +49,42 @@ export interface FeatureImportance {
   importance: number;
 }
 
+export interface FeatureImportanceStability {
+  feature: string;
+  mean_rank: number;
+  sd_rank: number;
+  top_n_frequency: number;
+}
+
+export interface CalibrationCurvePoint {
+  bin: string;
+  mean_pred: number;
+  frac_pos: number;
+  n: number;
+  bin_center: number;
+  mean_pred_pct: number;
+  frac_pos_pct: number;
+}
+
+export type CalibrationCurves = Record<string, CalibrationCurvePoint[]>;
+
+export interface PCAClusteringPoint {
+  x: number;
+  y: number;
+  sample_id: string;
+  actual_class: string;
+}
+
+export interface ClusteringExport {
+  pca?: {
+    points: PCAClusteringPoint[];
+    variance_explained?: {
+      pc1: number;
+      pc2: number;
+    };
+  } | null;
+}
+
 export interface PermutationMetric {
   permuted_mean: number;
   permuted_sd: number;
@@ -100,6 +136,9 @@ export interface MLResults {
   metadata: MLResultsMetadata;
   model_performance: ModelPerformance;
   feature_importance: FeatureImportance[];
+  feature_importance_stability?: FeatureImportanceStability[] | null;
+  calibration_curves?: CalibrationCurves | null;
+  clustering?: ClusteringExport | null;
   permutation_testing: PermutationTesting | null;
   profile_ranking: {
     top_profiles: ProfileRanking[];
