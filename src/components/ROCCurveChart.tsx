@@ -155,15 +155,20 @@ export function ROCCurveChart({ performance }: ROCCurveChartProps) {
       <div className="bg-card rounded-xl p-6 border border-border">
         <h3 className="text-lg font-semibold mb-4">ROC Curves Comparison</h3>
         <ResponsiveContainer width="100%" height={450}>
-          <LineChart data={chartData} margin={{ top: 20, right: 30, left: 20, bottom: 20 }}>
+          <LineChart data={chartData} margin={{ top: 20, right: 30, left: 20, bottom: 60 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
             <XAxis
               dataKey="fpr"
               type="number"
               domain={[0, 1]}
               tickFormatter={(v) => (v * 100).toFixed(0) + "%"}
-              label={{ value: "False Positive Rate (1 - Specificity)", position: "bottom", offset: 0 }}
               stroke="hsl(var(--muted-foreground))"
+              label={{ 
+                value: "False Positive Rate (1 - Specificity)", 
+                position: "insideBottom", 
+                offset: -10,
+                style: { textAnchor: "middle", fill: "hsl(var(--muted-foreground))" }
+              }}
             />
             <YAxis
               type="number"
@@ -184,14 +189,17 @@ export function ROCCurveChart({ performance }: ROCCurveChartProps) {
                 MODEL_LABELS[name] || name,
               ]}
             />
-            <Legend />
+            <Legend 
+              verticalAlign="top" 
+              align="right"
+              wrapperStyle={{ paddingBottom: "20px" }}
+            />
             
             {/* Random classifier line */}
             <ReferenceLine
               segment={[{ x: 0, y: 0 }, { x: 1, y: 1 }]}
               stroke="hsl(var(--muted-foreground))"
               strokeDasharray="5 5"
-              label={{ value: "Random", position: "insideBottomRight" }}
             />
             
             {/* Model curves */}
@@ -211,6 +219,9 @@ export function ROCCurveChart({ performance }: ROCCurveChartProps) {
             )}
           </LineChart>
         </ResponsiveContainer>
+        <p className="text-xs text-muted-foreground text-center mt-2">
+          Dashed diagonal line represents random classifier performance (AUC = 0.50)
+        </p>
       </div>
 
       {/* AUC Summary Table */}

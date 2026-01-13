@@ -18,6 +18,11 @@ interface ProfileRankingTableProps {
   topPercent: number;
 }
 
+const CLASS_NAMES: Record<string, string> = {
+  "0": "Negative",
+  "1": "Positive",
+};
+
 export function ProfileRankingTable({ rankings, topPercent }: ProfileRankingTableProps) {
   const [search, setSearch] = useState("");
   const [sortField, setSortField] = useState<keyof ProfileRanking>("rank");
@@ -26,11 +31,12 @@ export function ProfileRankingTable({ rankings, topPercent }: ProfileRankingTabl
   const filteredAndSorted = useMemo(() => {
     let data = [...rankings];
 
-    // Filter
+    // Filter by sample_id or sample_index
     if (search) {
       const searchLower = search.toLowerCase();
       data = data.filter(
         (r) =>
+          (r.sample_id && r.sample_id.toLowerCase().includes(searchLower)) ||
           r.sample_index.toString().includes(searchLower) ||
           r.actual_class.toLowerCase().includes(searchLower) ||
           r.predicted_class.toLowerCase().includes(searchLower)
@@ -73,6 +79,11 @@ export function ProfileRankingTable({ rankings, topPercent }: ProfileRankingTabl
         : 0,
     };
   }, [rankings]);
+
+  // Helper to display sample name
+  const getSampleName = (r: ProfileRanking) => {
+    return r.sample_id || `Sample_${r.sample_index}`;
+  };
 
   return (
     <div className="bg-card rounded-xl border border-border">
@@ -125,7 +136,7 @@ export function ProfileRankingTable({ rankings, topPercent }: ProfileRankingTabl
                   Rank <ArrowUpDown className="w-3 h-3" />
                 </div>
               </TableHead>
-              <TableHead className="cursor-pointer hover:bg-muted/50" onClick={() => handleSort("sample_index")}>
+              <TableHead className="cursor-pointer hover:bg-muted/50" onClick={() => handleSort("sample_id")}>
                 <div className="flex items-center gap-1">
                   Sample <ArrowUpDown className="w-3 h-3" />
                 </div>
@@ -148,7 +159,7 @@ export function ProfileRankingTable({ rankings, topPercent }: ProfileRankingTabl
           <TableBody>
             {filteredAndSorted.slice(0, 100).map((row) => (
               <TableRow 
-                key={row.sample_index}
+                key={row.sample_id || row.sample_index}
                 className={cn(
                   row.top_profile && "bg-primary/5",
                   !row.correct && "bg-destructive/5"
@@ -164,15 +175,15 @@ export function ProfileRankingTable({ rankings, topPercent }: ProfileRankingTabl
                     )}
                   </div>
                 </TableCell>
-                <TableCell className="font-mono">{row.sample_id || row.sample_index}</TableCell>
+                <TableCell className="font-mono font-medium">{getSampleName(row)}</TableCell>
                 <TableCell>
                   <Badge variant={row.actual_class === "1" ? "default" : "outline"}>
-                    {row.actual_class === "1" ? "Positive" : "Negative"}
+                    {CLASS_NAMES[row.actual_class] || row.actual_class}
                   </Badge>
                 </TableCell>
                 <TableCell>
                   <Badge variant={row.predicted_class === "1" ? "default" : "outline"}>
-                    {row.predicted_class === "1" ? "Positive" : "Negative"}
+                    {CLASS_NAMES[row.predicted_class] || row.predicted_class}
                   </Badge>
                 </TableCell>
                 <TableCell className="font-mono">
