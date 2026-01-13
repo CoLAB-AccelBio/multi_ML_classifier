@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import type { ConfusionMatrixData } from "@/types/ml-results";
 
 interface ConfusionMatrixChartProps {
@@ -10,19 +11,16 @@ export function ConfusionMatrixChart({ data, modelName }: ConfusionMatrixChartPr
   const { tp, tn, fp, fn } = data;
   const total = tp + tn + fp + fn;
 
-  const cells = useMemo(() => [
-    { label: "True Positive", value: tp, row: 0, col: 1, color: "bg-success/80", textColor: "text-success-foreground" },
-    { label: "False Negative", value: fn, row: 0, col: 0, color: "bg-warning/80", textColor: "text-warning-foreground" },
-    { label: "False Positive", value: fp, row: 1, col: 1, color: "bg-warning/80", textColor: "text-warning-foreground" },
-    { label: "True Negative", value: tn, row: 1, col: 0, color: "bg-success/80", textColor: "text-success-foreground" },
-  ], [tp, tn, fp, fn]);
-
   const metrics = useMemo(() => {
-    const accuracy = ((tp + tn) / total * 100).toFixed(1);
+    const accuracy = total > 0 ? ((tp + tn) / total * 100).toFixed(1) : "0";
     const precision = tp + fp > 0 ? (tp / (tp + fp) * 100).toFixed(1) : "0";
-    const recall = tp + fn > 0 ? (tp / (tp + fn) * 100).toFixed(1) : "0";
+    const recall = tp + fn > 0 ? (tp / (tp + fn) * 100).toFixed(1) : "0"; // Sensitivity
     const specificity = tn + fp > 0 ? (tn / (tn + fp) * 100).toFixed(1) : "0";
-    return { accuracy, precision, recall, specificity };
+    const f1 = parseFloat(precision) + parseFloat(recall) > 0 
+      ? (2 * parseFloat(precision) * parseFloat(recall) / (parseFloat(precision) + parseFloat(recall))).toFixed(1)
+      : "0";
+    const npv = tn + fn > 0 ? (tn / (tn + fn) * 100).toFixed(1) : "0"; // Negative Predictive Value
+    return { accuracy, precision, recall, specificity, f1, npv };
   }, [tp, tn, fp, fn, total]);
 
   return (
@@ -84,7 +82,7 @@ export function ConfusionMatrixChart({ data, modelName }: ConfusionMatrixChartPr
       </div>
 
       {/* Derived Metrics */}
-      <div className="grid grid-cols-2 gap-2 mt-4 pt-4 border-t border-border">
+      <div className="grid grid-cols-3 gap-2 mt-4 pt-4 border-t border-border">
         <div className="text-center">
           <p className="text-xs text-muted-foreground">Accuracy</p>
           <p className="font-mono font-semibold text-primary">{metrics.accuracy}%</p>
@@ -94,14 +92,97 @@ export function ConfusionMatrixChart({ data, modelName }: ConfusionMatrixChartPr
           <p className="font-mono font-semibold">{metrics.precision}%</p>
         </div>
         <div className="text-center">
-          <p className="text-xs text-muted-foreground">Recall</p>
-          <p className="font-mono font-semibold">{metrics.recall}%</p>
+          <p className="text-xs text-muted-foreground">Sensitivity</p>
+          <p className="font-mono font-semibold text-success">{metrics.recall}%</p>
         </div>
         <div className="text-center">
           <p className="text-xs text-muted-foreground">Specificity</p>
-          <p className="font-mono font-semibold">{metrics.specificity}%</p>
+          <p className="font-mono font-semibold text-info">{metrics.specificity}%</p>
+        </div>
+        <div className="text-center">
+          <p className="text-xs text-muted-foreground">F1 Score</p>
+          <p className="font-mono font-semibold">{metrics.f1}%</p>
+        </div>
+        <div className="text-center">
+          <p className="text-xs text-muted-foreground">NPV</p>
+          <p className="font-mono font-semibold">{metrics.npv}%</p>
         </div>
       </div>
     </div>
+  );
+}
+
+// Explanation component for the confusion matrix concepts
+export function ConfusionMatrixExplanation() {
+  return (
+    <Card className="mb-6">
+      <CardHeader>
+        <CardTitle className="text-lg">Understanding the Confusion Matrix</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4 text-sm">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="space-y-3">
+            <h4 className="font-semibold text-foreground">Matrix Components</h4>
+            <ul className="space-y-2 text-muted-foreground">
+              <li>
+                <span className="font-semibold text-success">TP (True Positive):</span> Correctly predicted positive cases. 
+                The model said "positive" and the actual class was positive.
+              </li>
+              <li>
+                <span className="font-semibold text-success">TN (True Negative):</span> Correctly predicted negative cases.
+                The model said "negative" and the actual class was negative.
+              </li>
+              <li>
+                <span className="font-semibold text-warning">FP (False Positive):</span> Type I error. The model incorrectly 
+                predicted positive when the actual class was negative. Also called "false alarm".
+              </li>
+              <li>
+                <span className="font-semibold text-warning">FN (False Negative):</span> Type II error. The model incorrectly 
+                predicted negative when the actual class was positive. Also called "miss".
+              </li>
+            </ul>
+          </div>
+
+          <div className="space-y-3">
+            <h4 className="font-semibold text-foreground">Derived Metrics</h4>
+            <ul className="space-y-2 text-muted-foreground">
+              <li>
+                <span className="font-semibold text-primary">Accuracy:</span> (TP+TN)/(Total) — Overall correctness. 
+                Can be misleading with imbalanced classes.
+              </li>
+              <li>
+                <span className="font-semibold text-foreground">Precision:</span> TP/(TP+FP) — Of all positive predictions, 
+                how many were correct? Important when FP is costly.
+              </li>
+              <li>
+                <span className="font-semibold text-success">Sensitivity (Recall):</span> TP/(TP+FN) — Of all actual positives, 
+                how many did we catch? Critical in medical diagnostics.
+              </li>
+              <li>
+                <span className="font-semibold text-info">Specificity:</span> TN/(TN+FP) — Of all actual negatives, 
+                how many did we correctly identify? Important to avoid false alarms.
+              </li>
+              <li>
+                <span className="font-semibold text-foreground">F1 Score:</span> Harmonic mean of Precision and Recall. 
+                Balances both metrics.
+              </li>
+              <li>
+                <span className="font-semibold text-foreground">NPV:</span> TN/(TN+FN) — Negative Predictive Value. 
+                Of all negative predictions, how many were correct?
+              </li>
+            </ul>
+          </div>
+        </div>
+
+        <div className="p-3 bg-muted/30 rounded-lg mt-4">
+          <p className="text-muted-foreground">
+            <strong className="text-foreground">Clinical Relevance:</strong> In diagnostic applications, 
+            <strong className="text-success"> high sensitivity</strong> is crucial to avoid missing disease cases (minimize FN), 
+            while <strong className="text-info">high specificity</strong> is important to avoid unnecessary treatments or anxiety 
+            from false positives. The optimal balance depends on the clinical context and the relative costs of each error type.
+          </p>
+        </div>
+      </CardContent>
+    </Card>
   );
 }

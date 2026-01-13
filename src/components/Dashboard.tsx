@@ -29,7 +29,7 @@ import { FeatureImportanceStabilityTab } from "./FeatureImportanceStabilityTab";
 import { PermutationTestingPanel } from "./PermutationTestingPanel";
 import { ProfileRankingTable } from "./ProfileRankingTable";
 import { ConfigSummary } from "./ConfigSummary";
-import { ConfusionMatrixChart } from "./ConfusionMatrixChart";
+import { ConfusionMatrixChart, ConfusionMatrixExplanation } from "./ConfusionMatrixChart";
 import { ROCCurveChart } from "./ROCCurveChart";
 import { ReportExport } from "./ReportExport";
 import { ThemeToggle } from "./ThemeToggle";
@@ -329,7 +329,8 @@ export function Dashboard({ data, onReset }: DashboardProps) {
             </div>
           </TabsContent>
 
-          <TabsContent value="confusion">
+          <TabsContent value="confusion" className="space-y-6">
+            <ConfusionMatrixExplanation />
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
               {Object.entries(data.model_performance)
                 .filter(([, metrics]) => metrics?.confusion_matrix)
