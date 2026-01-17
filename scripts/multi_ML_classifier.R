@@ -1914,9 +1914,16 @@ perform_survival_analysis <- function(expr_data, annotation, time_col, event_col
     return(NULL)
   }
   
-  # Extract survival data
-  surv_time <- as.numeric(annotation[[time_col]])
-  surv_event <- as.numeric(annotation[[event_col]])
+  # Extract survival data with robust numeric conversion (suppress coercion warnings)
+  surv_time <- suppressWarnings(as.numeric(as.character(annotation[[time_col]])))
+  surv_event <- suppressWarnings(as.numeric(as.character(annotation[[event_col]])))
+  
+  # Log how many values failed conversion
+  na_time <- sum(is.na(surv_time) & !is.na(annotation[[time_col]]))
+  na_event <- sum(is.na(surv_event) & !is.na(annotation[[event_col]]))
+  if (na_time > 0 || na_event > 0) {
+    log_message(sprintf("Note: %d time and %d event values could not be converted to numeric", na_time, na_event), "INFO")
+  }
   
   # Remove samples with missing survival data
   valid_idx <- !is.na(surv_time) & !is.na(surv_event) & surv_time > 0

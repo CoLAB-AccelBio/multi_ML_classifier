@@ -896,8 +896,16 @@ run_survival_analysis <- function(X, y, sample_ids, results, config, annot, anno
   surv_annot <- annot[annot[[annot_sample_col]] %in% sample_ids, ]
   surv_annot <- surv_annot[match(sample_ids, surv_annot[[annot_sample_col]]), ]
   
-  time_vals <- as.numeric(surv_annot[[config$time_variable]])
-  event_vals <- as.numeric(surv_annot[[config$event_variable]])
+  # Convert to numeric with robust handling (suppress coercion warnings)
+  time_vals <- suppressWarnings(as.numeric(as.character(surv_annot[[config$time_variable]])))
+  event_vals <- suppressWarnings(as.numeric(as.character(surv_annot[[config$event_variable]])))
+  
+  # Log how many values failed conversion
+  na_time <- sum(is.na(time_vals) & !is.na(surv_annot[[config$time_variable]]))
+  na_event <- sum(is.na(event_vals) & !is.na(surv_annot[[config$event_variable]]))
+  if (na_time > 0 || na_event > 0) {
+    log_message(sprintf("Note: %d time and %d event values could not be converted to numeric", na_time, na_event), "INFO")
+  }
   
   # Remove samples with missing survival data
   valid_idx <- !is.na(time_vals) & !is.na(event_vals) & time_vals > 0
