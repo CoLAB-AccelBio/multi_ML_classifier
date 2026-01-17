@@ -46,6 +46,7 @@ import { FeatureExpressionBoxplotTab } from "./FeatureExpressionBoxplotTab";
 import { PermutationDistributionTab } from "./PermutationDistributionTab";
 import { MLMethodInfoPanel } from "./MLMethodInfoPanel";
 import { FeatureSelectionVisualization } from "./FeatureSelectionVisualization";
+import { RiskScoreDistributionTab } from "./RiskScoreDistributionTab";
 import type { MLResults } from "@/types/ml-results";
 
 interface DashboardProps {
@@ -232,6 +233,10 @@ export function Dashboard({ data, onReset }: DashboardProps) {
               <Users className="w-4 h-4 mr-2" />
               Rankings
             </TabsTrigger>
+            <TabsTrigger value="risk-scores" className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-md font-medium">
+              <Activity className="w-4 h-4 mr-2" />
+              Risk Scores
+            </TabsTrigger>
             <TabsTrigger value="prediction" className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-md font-medium">
               <Beaker className="w-4 h-4 mr-2" />
               Predict
@@ -402,6 +407,19 @@ export function Dashboard({ data, onReset }: DashboardProps) {
               <div className="bg-card rounded-xl p-12 border border-border text-center">
                 <Users className="w-12 h-12 text-muted-foreground mx-auto mb-4" />
                 <p className="text-muted-foreground">No profile ranking data available</p>
+              </div>
+            )}
+          </TabsContent>
+
+          <TabsContent value="risk-scores">
+            {data.profile_ranking?.all_rankings ? (
+              <RiskScoreDistributionTab 
+                rankings={data.profile_ranking.all_rankings}
+              />
+            ) : (
+              <div className="bg-card rounded-xl p-12 border border-border text-center">
+                <Activity className="w-12 h-12 text-muted-foreground mx-auto mb-4" />
+                <p className="text-muted-foreground">No risk score data available. Run the R script with profile ranking enabled.</p>
               </div>
             )}
           </TabsContent>
