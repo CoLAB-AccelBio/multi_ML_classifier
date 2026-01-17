@@ -619,9 +619,17 @@ forward_selection <- function(X, y, max_features, seed = 42) {
   return(selected)
 }
 
-backward_elimination <- function(X, y, min_features = 5, seed = 42) {
+backward_elimination <- function(X, y, max_features = 50, seed = 42) {
   set.seed(seed)
   log_message("Performing backward elimination...")
+  
+  # Cap initial features if too many
+  if (ncol(X) > max_features) {
+    log_message(sprintf("Pre-filtering to top %d features by variance for backward elimination", max_features))
+    feature_var <- apply(X, 2, var, na.rm = TRUE)
+    top_idx <- order(feature_var, decreasing = TRUE)[1:max_features]
+    X <- X[, top_idx, drop = FALSE]
+  }
   
   selected <- colnames(X)
   ctrl <- trainControl(method = "cv", number = 3)
@@ -629,6 +637,7 @@ backward_elimination <- function(X, y, min_features = 5, seed = 42) {
                  trControl = ctrl, ntree = 100, tuneLength = 1)
   best_accuracy <- max(model$results$Accuracy)
   
+  min_features <- 5
   while (length(selected) > min_features) {
     results <- sapply(selected, function(feat) {
       current_features <- setdiff(selected, feat)
@@ -706,12 +715,34 @@ stepwise_selection <- function(X, y, max_features, seed = 42) {
 }
 
 perform_feature_selection <- function(X, y, method, max_features, seed = 42) {
-  switch(method,
+  # Enforce max_features limit (default 50)
+  max_features <- min(max_features, 50)
+  log_message(sprintf("Feature selection: method=%s, max_features=%d", method, max_features))
+  
+  selected <- switch(method,
          "forward" = forward_selection(X, y, max_features, seed),
          "backward" = backward_elimination(X, y, max_features, seed),
          "stepwise" = stepwise_selection(X, y, max_features, seed),
-         "none" = colnames(X)
+         "none" = {
+           # For "none" method, select top features by variance (capped at max_features)
+           if (ncol(X) <= max_features) {
+             colnames(X)
+           } else {
+             log_message(sprintf("Capping features from %d to %d using variance ranking", ncol(X), max_features))
+             feature_var <- apply(X, 2, var, na.rm = TRUE)
+             top_idx <- order(feature_var, decreasing = TRUE)[1:max_features]
+             colnames(X)[top_idx]
+           }
+         }
   )
+  
+  # Final enforcement of max_features limit
+  if (length(selected) > max_features) {
+    log_message(sprintf("Trimming selected features from %d to %d", length(selected), max_features), "WARN")
+    selected <- selected[1:max_features]
+  }
+  
+  return(selected)
 }
 
 # =============================================================================

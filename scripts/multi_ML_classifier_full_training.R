@@ -369,8 +369,20 @@ load_and_preprocess_data <- function(config) {
 # =============================================================================
 
 perform_feature_selection <- function(X, y, config) {
+  # Enforce max_features limit (hard cap at 50)
+  max_features <- min(config$max_features, 50)
+  log_message(sprintf("Feature selection: method=%s, max_features=%d", config$feature_selection_method, max_features))
+  
   if (config$feature_selection_method == "none") {
-    selected_features <- colnames(X)
+    # For "none" method, select top features by variance (capped at max_features)
+    if (ncol(X) <= max_features) {
+      selected_features <- colnames(X)
+    } else {
+      log_message(sprintf("Capping features from %d to %d using variance ranking", ncol(X), max_features))
+      feature_var <- apply(X, 2, var, na.rm = TRUE)
+      top_idx <- order(feature_var, decreasing = TRUE)[1:max_features]
+      selected_features <- colnames(X)[top_idx]
+    }
     importance_df <- data.frame(
       feature = selected_features,
       importance = rep(1, length(selected_features)),
@@ -389,7 +401,7 @@ perform_feature_selection <- function(X, y, config) {
   rf_temp <- randomForest(x = X, y = y, ntree = 100, importance = TRUE)
   importance_scores <- importance(rf_temp)[, "MeanDecreaseGini"]
   
-  n_select <- min(config$max_features, ncol(X))
+  n_select <- min(max_features, ncol(X))
   top_indices <- order(importance_scores, decreasing = TRUE)[1:n_select]
   selected_features <- colnames(X)[top_indices]
   
@@ -409,11 +421,11 @@ perform_feature_selection <- function(X, y, config) {
     )
   })
   
-  log_message(sprintf("Selected %d features", length(selected_features)))
+  log_message(sprintf("Selected %d features (max allowed: %d)", length(selected_features), max_features))
   
   return(list(
     selected_features = selected_features,
-    feature_importance = head(importance_df, 20),
+    feature_importance = head(importance_df, max_features),
     feature_importance_stability = stability_df
   ))
 }
