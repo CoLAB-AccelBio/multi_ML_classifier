@@ -76,7 +76,17 @@ option_list <- list(
   make_option(c("-p", "--n_permutations"),
               type = "integer",
               default = 100,
-              help = "Number of permutations [default: %default]")
+              help = "Number of permutations [default: %default]"),
+  
+  make_option(c("--time"),
+              type = "character",
+              default = NULL,
+              help = "Time-to-event column for survival analysis"),
+  
+  make_option(c("--event"),
+              type = "character",
+              default = NULL,
+              help = "Event/censoring indicator column for survival analysis (1=event, 0=censored)")
 )
 
 opt <- parse_args(OptionParser(option_list = option_list))
@@ -132,6 +142,8 @@ if (!is.null(opt$scale)) config$scale_data <- opt$scale
 if (!is.null(opt$outdir)) config$output_dir <- opt$outdir
 if (!is.null(opt$seed)) config$seed <- opt$seed
 if (!is.null(opt$n_permutations)) config$n_permutations <- opt$n_permutations
+if (!is.null(opt$time)) config$time_variable <- opt$time
+if (!is.null(opt$event)) config$event_variable <- opt$event
 
 # =============================================================================
 # FAST MODE
@@ -854,11 +866,214 @@ compute_feature_boxplot_stats <- function(unscaled_expr, y, features) {
 }
 
 # =============================================================================
+# SURVIVAL ANALYSIS (Kaplan-Meier & Cox Proportional Hazards)
+# =============================================================================
+
+run_survival_analysis <- function(X, y, sample_ids, results, config, annot, annot_sample_col) {
+  if (!survival_available) {
+    log_message("Survival package not available, skipping survival analysis", "WARN")
+    return(NULL)
+  }
+  
+  if (is.null(config$time_variable) || is.null(config$event_variable)) {
+    log_message("No time/event variables specified, skipping survival analysis", "INFO")
+    return(NULL)
+  }
+  
+  log_message("Running survival analysis...")
+  
+  # Check if columns exist
+  if (!config$time_variable %in% colnames(annot)) {
+    log_message(sprintf("Time variable '%s' not found in annotation", config$time_variable), "WARN")
+    return(NULL)
+  }
+  if (!config$event_variable %in% colnames(annot)) {
+    log_message(sprintf("Event variable '%s' not found in annotation", config$event_variable), "WARN")
+    return(NULL)
+  }
+  
+  # Extract survival data aligned with samples
+  surv_annot <- annot[annot[[annot_sample_col]] %in% sample_ids, ]
+  surv_annot <- surv_annot[match(sample_ids, surv_annot[[annot_sample_col]]), ]
+  
+  time_vals <- as.numeric(surv_annot[[config$time_variable]])
+  event_vals <- as.numeric(surv_annot[[config$event_variable]])
+  
+  # Remove samples with missing survival data
+  valid_idx <- !is.na(time_vals) & !is.na(event_vals) & time_vals > 0
+  if (sum(valid_idx) < 10) {
+    log_message("Insufficient valid survival data (< 10 samples)", "WARN")
+    return(NULL)
+  }
+  
+  log_message(sprintf("Survival analysis: %d samples with valid time/event data", sum(valid_idx)))
+  
+  time_valid <- time_vals[valid_idx]
+  event_valid <- event_vals[valid_idx]
+  X_valid <- X[valid_idx, , drop = FALSE]
+  
+  # Per-gene survival analysis (top features)
+  per_gene_results <- list()
+  top_features <- colnames(X_valid)[1:min(50, ncol(X_valid))]
+  
+  for (gene in top_features) {
+    tryCatch({
+      expr <- X_valid[, gene]
+      median_expr <- median(expr, na.rm = TRUE)
+      group <- ifelse(expr > median_expr, "High", "Low")
+      group <- factor(group, levels = c("Low", "High"))
+      
+      surv_obj <- Surv(time_valid, event_valid)
+      
+      # Log-rank test
+      logrank <- survdiff(surv_obj ~ group)
+      logrank_p <- 1 - pchisq(logrank$chisq, df = 1)
+      
+      # Cox proportional hazards
+      cox_fit <- coxph(surv_obj ~ expr)
+      cox_summary <- summary(cox_fit)
+      cox_hr <- cox_summary$conf.int[1]
+      cox_hr_lower <- cox_summary$conf.int[3]
+      cox_hr_upper <- cox_summary$conf.int[4]
+      cox_p <- cox_summary$coefficients[5]
+      
+      # Kaplan-Meier for median survival
+      km_fit <- survfit(surv_obj ~ group)
+      km_summary <- summary(km_fit)
+      
+      # Get median survival times
+      high_median <- tryCatch({
+        sf <- survfit(surv_obj[group == "High"] ~ 1)
+        if (!is.na(sf$surv[1])) quantile(sf, 0.5)$quantile else NA
+      }, error = function(e) NA)
+      
+      low_median <- tryCatch({
+        sf <- survfit(surv_obj[group == "Low"] ~ 1)
+        if (!is.na(sf$surv[1])) quantile(sf, 0.5)$quantile else NA
+      }, error = function(e) NA)
+      
+      per_gene_results[[gene]] <- list(
+        gene = gene,
+        logrank_p = logrank_p,
+        cox_hr = cox_hr,
+        cox_hr_lower = cox_hr_lower,
+        cox_hr_upper = cox_hr_upper,
+        cox_p = cox_p,
+        high_median_surv = if (is.na(high_median)) NULL else high_median,
+        low_median_surv = if (is.na(low_median)) NULL else low_median
+      )
+    }, error = function(e) {
+      log_message(sprintf("Survival analysis failed for %s: %s", gene, e$message), "WARN")
+    })
+  }
+  
+  # Model-based risk score survival (using ensemble probabilities)
+  model_risk_results <- list()
+  
+  for (model_name in c("rf", "svm", "xgboost", "soft_vote")) {
+    if (is.null(results[[model_name]])) next
+    
+    tryCatch({
+      probs <- results[[model_name]]$probabilities
+      if (length(probs) != length(valid_idx)) {
+        log_message(sprintf("Probability length mismatch for %s", model_name), "WARN")
+        next
+      }
+      
+      probs_valid <- probs[valid_idx]
+      median_prob <- median(probs_valid, na.rm = TRUE)
+      risk_group <- ifelse(probs_valid > median_prob, "High", "Low")
+      risk_group <- factor(risk_group, levels = c("Low", "High"))
+      
+      surv_obj <- Surv(time_valid, event_valid)
+      
+      # Log-rank test
+      logrank <- survdiff(surv_obj ~ risk_group)
+      logrank_p <- 1 - pchisq(logrank$chisq, df = 1)
+      
+      # Cox model
+      cox_fit <- coxph(surv_obj ~ probs_valid)
+      cox_summary <- summary(cox_fit)
+      cox_hr <- cox_summary$conf.int[1]
+      cox_hr_lower <- cox_summary$conf.int[3]
+      cox_hr_upper <- cox_summary$conf.int[4]
+      cox_p <- cox_summary$coefficients[5]
+      
+      # KM curves for high/low risk
+      km_fit <- survfit(surv_obj ~ risk_group)
+      
+      # Extract KM curve data
+      extract_km_curve <- function(km_fit, strata_name) {
+        if (is.null(km_fit$strata)) {
+          # Single stratum
+          data.frame(
+            time = km_fit$time,
+            surv = km_fit$surv,
+            lower = km_fit$lower,
+            upper = km_fit$upper,
+            n_risk = km_fit$n.risk,
+            n_event = km_fit$n.event,
+            n_censor = km_fit$n.censor,
+            stringsAsFactors = FALSE
+          )
+        } else {
+          # Multiple strata
+          strata_idx <- which(names(km_fit$strata) == strata_name)
+          if (length(strata_idx) == 0) return(data.frame())
+          
+          start_idx <- if (strata_idx == 1) 1 else sum(km_fit$strata[1:(strata_idx-1)]) + 1
+          end_idx <- sum(km_fit$strata[1:strata_idx])
+          
+          data.frame(
+            time = km_fit$time[start_idx:end_idx],
+            surv = km_fit$surv[start_idx:end_idx],
+            lower = km_fit$lower[start_idx:end_idx],
+            upper = km_fit$upper[start_idx:end_idx],
+            n_risk = km_fit$n.risk[start_idx:end_idx],
+            n_event = km_fit$n.event[start_idx:end_idx],
+            n_censor = km_fit$n.censor[start_idx:end_idx],
+            stringsAsFactors = FALSE
+          )
+        }
+      }
+      
+      km_high <- extract_km_curve(km_fit, "risk_group=High")
+      km_low <- extract_km_curve(km_fit, "risk_group=Low")
+      
+      model_risk_results[[model_name]] <- list(
+        model = model_name,
+        stats = list(
+          logrank_p = logrank_p,
+          cox_hr = cox_hr,
+          cox_hr_lower = cox_hr_lower,
+          cox_hr_upper = cox_hr_upper,
+          cox_p = cox_p
+        ),
+        km_curve_high = lapply(1:nrow(km_high), function(i) as.list(km_high[i,])),
+        km_curve_low = lapply(1:nrow(km_low), function(i) as.list(km_low[i,]))
+      )
+    }, error = function(e) {
+      log_message(sprintf("Model risk survival failed for %s: %s", model_name, e$message), "WARN")
+    })
+  }
+  
+  log_message(sprintf("Survival analysis complete: %d genes, %d models", 
+                      length(per_gene_results), length(model_risk_results)))
+  
+  return(list(
+    time_variable = config$time_variable,
+    event_variable = config$event_variable,
+    per_gene = per_gene_results,
+    model_risk_scores = model_risk_results
+  ))
+}
+
+# =============================================================================
 # BUILD JSON OUTPUT
 # =============================================================================
 
 build_json_output <- function(data, results, feature_selection, permutation_results, 
-                              calibration_curves, clustering, profile_ranking, config) {
+                              calibration_curves, clustering, profile_ranking, survival_analysis, config) {
   
   # Format model performance (matching CV output format)
   model_performance <- list()
@@ -954,7 +1169,8 @@ build_json_output <- function(data, results, feature_selection, permutation_resu
     ),
     actual_distributions = list(),  # Empty as in original
     profile_ranking = profile_ranking,
-    selected_features = feature_selection$selected_features
+    selected_features = feature_selection$selected_features,
+    survival_analysis = survival_analysis
   )
   
   return(output)
@@ -981,6 +1197,10 @@ run_pipeline <- function(config) {
   
   # Load data
   data <- load_and_preprocess_data(config)
+  
+  # Load annotation for survival analysis (need full annotation)
+  annot <- read.delim(config$annotation_file, stringsAsFactors = FALSE)
+  annot_sample_col <- colnames(annot)[1]
   
   # Feature selection
   feature_selection <- perform_feature_selection(data$X_scaled, data$y, config)
@@ -1013,9 +1233,20 @@ run_pipeline <- function(config) {
   # Profile ranking (consistent structure with CV script)
   profile_ranking <- rank_profiles(results, data$y, data$sample_ids, config$top_percent)
   
+  # Survival analysis (if time/event variables provided)
+  survival_analysis <- run_survival_analysis(
+    X = X_selected_raw,
+    y = data$y,
+    sample_ids = data$sample_ids,
+    results = results,
+    config = config,
+    annot = annot,
+    annot_sample_col = annot_sample_col
+  )
+  
   # Build JSON output
   output <- build_json_output(data, results, feature_selection, permutation_results,
-                              calibration_curves, clustering, profile_ranking, config)
+                              calibration_curves, clustering, profile_ranking, survival_analysis, config)
   
   # Export
   output_path <- file.path(config$output_dir, config$output_json)
