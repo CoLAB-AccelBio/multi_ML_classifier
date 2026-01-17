@@ -9,17 +9,19 @@ An interactive React dashboard for visualizing results from multi-method machine
 - **Feature Selection**: Forward, backward, and stepwise selection methods
 - **Permutation Testing**: Statistical validation against random chance
 - **Cross-Validation**: Repeated k-fold CV with comprehensive metrics
+- **Class-Specific Risk Scores**: Per-sample risk scores for each class (0-100 scale)
 
 ### Visualization Dashboard
 - **Model Performance Comparison**: Side-by-side comparison of all ML methods
 - **ROC Curves**: Interactive multi-model ROC curves with threshold analysis
 - **Confusion Matrices**: Visual matrices with derived metrics (Accuracy, Precision, Sensitivity, Specificity, F1, NPV)
 - **Feature Importance**: Ranked feature visualization with stability analysis
-- **Expression Box Plots**: Distribution of top features across classes
+- **Expression Box Plots**: True box plots showing median, IQR, whiskers, and mean for top features across classes
 - **Dimensionality Reduction**: PCA, t-SNE, and UMAP clustering visualizations
 - **Permutation Distributions**: Actual vs. permuted performance comparison
 - **Calibration Curves**: Model probability calibration assessment
-- **Profile Rankings**: Sample-level prediction confidence rankings
+- **Profile Rankings**: Sample-level prediction confidence rankings with risk scores
+- **Feature Selection Visualization**: Per-method feature selection comparison
 
 ### Export & Reporting
 - **HTML/PDF Reports**: Comprehensive export of analysis results
@@ -46,22 +48,34 @@ npm run dev
 
 ### R Script Setup
 
-1. Create the conda environment:
+Two R scripts are available:
+
+1. **Cross-Validation Mode** (`scripts/multi_ML_classifier.R`): Full pipeline with k-fold CV
+2. **Full Training Mode** (`scripts/multi_ML_classifier_full_training.R`): Train on 100% of data
+
+#### Running the Analysis
+
 ```bash
+# Create conda environment
 conda env create -f public/ml_classifier_env.yml
 conda activate ml_classifier
-```
 
-2. Run the R analysis script:
-```bash
-Rscript public/intelligenes_ml_classifier.R \
+# Run CV-based analysis
+Rscript scripts/multi_ML_classifier.R \
+  --expr expression_matrix.txt \
+  --annot sample_annotation.txt \
+  --target diagnosis \
+  --outdir results
+
+# Or run full training (no CV)
+Rscript scripts/multi_ML_classifier_full_training.R \
   --expr expression_matrix.txt \
   --annot sample_annotation.txt \
   --target diagnosis \
   --outdir results
 ```
 
-3. Load the generated `ml_results.json` into the dashboard
+Load the generated `ml_results.json` into the dashboard.
 
 ## 📊 Input Data Format
 
@@ -100,6 +114,14 @@ Sample3   1          38   III
 
 **Note**: XGBoost and MLP require larger datasets for optimal performance. Random Forest, SVM, and KNN are more robust on small biological datasets (<50 samples).
 
+## 📈 Risk Scoring
+
+The pipeline calculates class-specific risk scores for each sample:
+- **Risk Score Class 0** (Negative): Probability × 100 for the negative class
+- **Risk Score Class 1** (Positive): Probability × 100 for the positive class
+
+These scores range from 0-100 and indicate the model's confidence that a sample belongs to each class. Higher scores indicate stronger classification confidence.
+
 ## 🛠 Technology Stack
 
 - **Frontend**: React 18, TypeScript, Vite
@@ -110,14 +132,16 @@ Sample3   1          38   III
 ## 📁 Project Structure
 
 ```
+├── scripts/
+│   ├── multi_ML_classifier.R              # CV-based analysis script
+│   └── multi_ML_classifier_full_training.R # Full training script
 ├── public/
-│   ├── intelligenes_ml_classifier.R  # Main R analysis script
-│   ├── ml_classifier_env.yml         # Conda environment
-│   └── demo_data/                    # Sample input files
+│   ├── ml_classifier_env.yml              # Conda environment
+│   └── demo_data/                         # Sample input files
 ├── src/
-│   ├── components/                   # React components
-│   ├── types/                        # TypeScript interfaces
-│   └── data/                         # Demo data
+│   ├── components/                        # React components
+│   ├── types/                             # TypeScript interfaces
+│   └── data/                              # Demo data
 └── README.md
 ```
 

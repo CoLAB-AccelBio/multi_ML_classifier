@@ -153,6 +153,12 @@ export function ProfileRankingTable({ rankings, topPercent }: ProfileRankingTabl
                   Confidence <ArrowUpDown className="w-3 h-3" />
                 </div>
               </TableHead>
+              <TableHead>
+                <div className="text-center">
+                  Risk Scores
+                  <div className="text-xs font-normal text-muted-foreground">Neg / Pos</div>
+                </div>
+              </TableHead>
               <TableHead>Status</TableHead>
             </TableRow>
           </TableHeader>
@@ -199,6 +205,33 @@ export function ProfileRankingTable({ rankings, topPercent }: ProfileRankingTabl
                     </div>
                     <span className="text-xs text-muted-foreground">
                       {(row.confidence * 100).toFixed(0)}%
+                    </span>
+                  </div>
+                </TableCell>
+                <TableCell>
+                  <div className="flex items-center gap-1 text-xs font-mono">
+                    <span 
+                      className={cn(
+                        "px-2 py-0.5 rounded",
+                        row.risk_score_class_0 && row.risk_score_class_0 > 50 
+                          ? "bg-primary/20 text-primary font-semibold" 
+                          : "bg-muted text-muted-foreground"
+                      )}
+                      title="Risk Score for Negative Class"
+                    >
+                      {row.risk_score_class_0 !== undefined ? row.risk_score_class_0.toFixed(0) : '--'}
+                    </span>
+                    <span className="text-muted-foreground">/</span>
+                    <span 
+                      className={cn(
+                        "px-2 py-0.5 rounded",
+                        row.risk_score_class_1 && row.risk_score_class_1 > 50 
+                          ? "bg-destructive/20 text-destructive font-semibold" 
+                          : "bg-muted text-muted-foreground"
+                      )}
+                      title="Risk Score for Positive Class"
+                    >
+                      {row.risk_score_class_1 !== undefined ? row.risk_score_class_1.toFixed(0) : '--'}
                     </span>
                   </div>
                 </TableCell>

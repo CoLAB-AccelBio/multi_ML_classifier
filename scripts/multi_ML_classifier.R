@@ -1356,38 +1356,81 @@ run_permutation_test <- function(X, y, config, selected_features = NULL) {
 }
 
 # =============================================================================
-# PROFILE RANKING
+# PROFILE RANKING WITH CLASS-SPECIFIC RISK SCORES
 # =============================================================================
 
 rank_profiles <- function(X, y, models, config, sample_ids = NULL) {
-  log_message("Ranking profiles by prediction confidence...")
+  log_message("Ranking profiles by prediction confidence with class-specific risk scores...")
   
   all_probs <- list()
+  all_probs_class0 <- list()  # Probability for class 0 (negative)
+  
+  # Get class levels
+  class_levels <- levels(y)
+  pos_class <- class_levels[2]  # Usually "1"
+  neg_class <- class_levels[1]  # Usually "0"
   
   if (!is.null(models$rf)) {
     prob_matrix <- tryCatch(predict(models$rf$model, X, type = "prob"), error = function(e) NULL)
-    all_probs$rf <- safe_get_prob(prob_matrix, "1", n = nrow(X))
+    if (!is.null(prob_matrix)) {
+      all_probs$rf <- safe_get_prob(prob_matrix, pos_class, n = nrow(X))
+      # Get class 0 probability
+      if (neg_class %in% colnames(prob_matrix)) {
+        all_probs_class0$rf <- prob_matrix[, neg_class]
+      } else {
+        all_probs_class0$rf <- 1 - all_probs$rf
+      }
+    }
   }
   
   if (!is.null(models$svm)) {
     svm_pred <- tryCatch(predict(models$svm$model, as.matrix(X), probability = TRUE), error = function(e) NULL)
     prob_matrix <- if (!is.null(svm_pred)) attr(svm_pred, "probabilities") else NULL
-    all_probs$svm <- safe_get_prob(prob_matrix, "1", n = nrow(X))
+    if (!is.null(prob_matrix)) {
+      all_probs$svm <- safe_get_prob(prob_matrix, pos_class, n = nrow(X))
+      if (neg_class %in% colnames(prob_matrix)) {
+        all_probs_class0$svm <- prob_matrix[, neg_class]
+      } else {
+        all_probs_class0$svm <- 1 - all_probs$svm
+      }
+    }
   }
   
   if (!is.null(models$xgboost)) {
     prob_vec <- tryCatch(predict(models$xgboost$model, as.matrix(X)), error = function(e) NULL)
     all_probs$xgboost <- safe_get_prob(prob_vec, n = nrow(X))
+    if (!is.null(all_probs$xgboost)) {
+      all_probs_class0$xgboost <- 1 - all_probs$xgboost
+    }
   }
   
   if (!is.null(models$mlp)) {
     prob_matrix <- tryCatch(predict(models$mlp$model, as.matrix(X)), error = function(e) NULL)
     all_probs$mlp <- safe_get_prob(prob_matrix, n = nrow(X))
+    if (!is.null(all_probs$mlp)) {
+      all_probs_class0$mlp <- 1 - all_probs$mlp
+    }
+  }
+  
+  if (!is.null(models$knn)) {
+    # For KNN we need to re-predict to get probabilities
+    knn_pred <- tryCatch({
+      knn(train = X, test = X, cl = y, k = config$knn_k, prob = TRUE)
+    }, error = function(e) NULL)
+    if (!is.null(knn_pred)) {
+      knn_prob <- attr(knn_pred, "prob")
+      # Adjust probability based on predicted class
+      knn_prob_pos <- ifelse(knn_pred == pos_class, knn_prob, 1 - knn_prob)
+      all_probs$knn <- knn_prob_pos
+      all_probs_class0$knn <- 1 - knn_prob_pos
+    }
   }
   
   # Keep only valid probability vectors with the expected length
   all_probs <- Filter(function(v) is.numeric(v) && length(v) == nrow(X), all_probs)
+  all_probs_class0 <- Filter(function(v) is.numeric(v) && length(v) == nrow(X), all_probs_class0)
   
+  # Calculate ensemble probability for positive class
   avg_prob <- if (length(all_probs) == 0) {
     log_message("No usable probability outputs for profile ranking; using neutral 0.5", "WARN")
     rep(0.5, nrow(X))
@@ -1395,16 +1438,36 @@ rank_profiles <- function(X, y, models, config, sample_ids = NULL) {
     as.numeric(rowMeans(do.call(cbind, all_probs), na.rm = TRUE))
   }
   
+  # Calculate ensemble probability for negative class
+  avg_prob_class0 <- if (length(all_probs_class0) == 0) {
+    1 - avg_prob
+  } else {
+    as.numeric(rowMeans(do.call(cbind, all_probs_class0), na.rm = TRUE))
+  }
+  
   confidence <- abs(avg_prob - 0.5) * 2
+  
+  # Create risk scores (scaled 0-100)
+  risk_score_positive <- avg_prob * 100
+  risk_score_negative <- avg_prob_class0 * 100
   
   ranking <- data.frame(
     sample_index = 1:nrow(X),
     actual_class = as.character(y),
     ensemble_probability = avg_prob,
-    predicted_class = ifelse(avg_prob > 0.5, "1", "0"),
+    predicted_class = ifelse(avg_prob > 0.5, pos_class, neg_class),
     confidence = confidence,
-    correct = as.character(y) == ifelse(avg_prob > 0.5, "1", "0")
+    correct = as.character(y) == ifelse(avg_prob > 0.5, pos_class, neg_class),
+    risk_score_class_0 = round(risk_score_negative, 2),
+    risk_score_class_1 = round(risk_score_positive, 2)
   )
+  
+  # Add sample_ids if provided
+  if (!is.null(sample_ids) && length(sample_ids) == nrow(X)) {
+    ranking$sample_id <- sample_ids
+  } else {
+    ranking$sample_id <- paste0("Sample_", 1:nrow(X))
+  }
   
   ranking <- ranking[order(-ranking$confidence), ]
   ranking$rank <- 1:nrow(ranking)

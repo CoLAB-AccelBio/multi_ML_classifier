@@ -136,6 +136,8 @@ export interface ProfileRanking {
   correct: boolean;
   rank: number;
   top_profile: boolean;
+  risk_score_class_0?: number;
+  risk_score_class_1?: number;
 }
 
 export interface FeatureBoxplotClassStats {
