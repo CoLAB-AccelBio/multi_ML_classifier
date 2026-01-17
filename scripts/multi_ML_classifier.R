@@ -50,6 +50,16 @@ suppressPackageStartupMessages({
 
 MIN_VALID_FOLD_FRACTION <- 0.3   # at least 30% valid folds required
 VAR_QUANTILE <- 0.25   # remove lowest 25% variance features
+SCALE_DATA_DEFAULT <- FALSE   # data scaling before analysis
+MODEL_SCALING <- list(
+  rf      = FALSE,
+  svm     = TRUE,
+  knn     = TRUE,
+  mlp     = TRUE,
+  xgboost = FALSE,
+  dr      = TRUE   # PCA / t-SNE / UMAP
+)
+
 
 option_list <- list(
   make_option(c("-e", "--expr"),
@@ -69,6 +79,11 @@ option_list <- list(
               default = "full",
               help = "Analysis mode: full or fast [default: %default]"),
   
+  make_option(c("--scale"),
+              action = "store_true",
+              default = FALSE,
+              help = "Scale expression data (Z-score per feature)"),
+  
   make_option(c("-o", "--outdir"),
               type = "character",
               default = "results",
@@ -78,7 +93,7 @@ option_list <- list(
               type = "integer",
               default = 42,
               help = "Random seed [default: %default]"),
- 
+  
   make_option(c("-f", "--n_folds"),
               type = "integer",
               default = 5,
@@ -119,6 +134,10 @@ config <- list(
   
   # Analysis mode: "full" (default) or "fast" (for testing, reduced accuracy)
   analysis_mode = "full",  # "full" or "fast"
+  
+  # Scale expression data (Z-score per feature)
+  scale_data = SCALE_DATA_DEFAULT,
+  model_scaling <- MODEL_SCALING,
   
   # Model settings
   seed = 42,
@@ -169,6 +188,7 @@ if (!is.null(opt$expr)) config$expression_matrix_file <- opt$expr
 if (!is.null(opt$annot)) config$annotation_file <- opt$annot
 if (!is.null(opt$target)) config$target_variable <- opt$target
 if (!is.null(opt$mode)) config$analysis_mode <- opt$mode
+if (!is.null(opt$scale)) config$scale_data <- opt$scale
 if (!is.null(opt$outdir)) config$output_dir <- opt$outdir
 if (!is.null(opt$seed)) config$seed <- opt$seed
 if (!is.null(opt$n_folds)) config$n_folds <- opt$n_folds
@@ -357,6 +377,29 @@ normalize_importance <- function(importance) {
   return((importance - min_val) / (max_val - min_val))
 }
 
+select_best_model <- function(summary_metrics) {
+  
+  valid_models <- c("rf", "svm", "xgboost", "knn", "mlp")
+  
+  scores <- sapply(valid_models, function(m) {
+    if (is.null(summary_metrics[[m]])) return(NA_real_)
+    
+    if (!is.null(summary_metrics[[m]]$auroc)) {
+      return(summary_metrics[[m]]$auroc$mean)
+    }
+    if (!is.null(summary_metrics[[m]]$balanced_accuracy)) {
+      return(summary_metrics[[m]]$balanced_accuracy$mean)
+    }
+    NA_real_
+  })
+  
+  scores <- scores[is.finite(scores)]
+  if (length(scores) == 0) return(NULL)
+  
+  names(which.max(scores))
+}
+
+
 # =============================================================================
 # DATA LOADING - Expression Matrix + Annotation
 # =============================================================================
@@ -380,10 +423,6 @@ load_data <- function(config) {
   # Load annotation file  
   log_message(sprintf("Reading annotation file: %s", config$annotation_file))
   annotation <- read.delim(config$annotation_file, stringsAsFactors = FALSE, sep = "\t")
-  
-  # Make names R-friendly
-  colnames(expr_matrix) <- make.names(colnames(expr_matrix))
-  rownames(annotation) <- make.names(rownames(annotation))
   
   # Find sample ID column in annotation (first column or look for common pattern)
   annot_sample_col <- colnames(annotation)[1]
@@ -462,19 +501,46 @@ load_data <- function(config) {
   }
   
   # Store unscaled expression for boxplot export (subset to current features)
-  unscaled_expr <- X
+  X_raw <- X
   
-  # Scale numeric features
-  numeric_cols <- sapply(X, is.numeric)
-  X[, numeric_cols] <- scale(X[, numeric_cols])
+  # --------------------------------------------------
+  # Optional Z-score scaling (per feature)
+  # --------------------------------------------------
+  
+  X_scaled <- X
+  
+  if (isTRUE(config$scale_data)) {
+    
+    log_message("Preparing scaled data matrix (Z-score per feature)", "INFO")
+    
+    feature_sd <- apply(X_scaled, 2, sd, na.rm = TRUE)
+    nonzero_sd <- feature_sd > 0
+    
+    if (any(!nonzero_sd)) {
+      log_message(sprintf(
+        "Removed %d zero-variance features before scaling",
+        sum(!nonzero_sd)
+      ), "WARN")
+    }
+    
+    X_scaled <- X_scaled[, nonzero_sd, drop = FALSE]
+    
+    X_scaled <- as.data.frame(
+      t(apply(X_scaled, 1, function(x) scale(as.numeric(x))))
+    )
+    
+    colnames(X_scaled) <- colnames(X_raw)[nonzero_sd]
+    rownames(X_scaled) <- rownames(X_raw)
+  }
+  
   
   # ------------------------------------------------------------------
   # Variance-based feature filtering (CRITICAL for speed & stability)
   # ------------------------------------------------------------------
   
-  feature_var <- apply(X, 2, var, na.rm = TRUE)
+  feature_var <- apply(X_scaled, 2, var, na.rm = TRUE)
   
-  # Remove bottom X% of variance
+  # Remove bottom X_scaled% of variance
   var_cutoff <- quantile(feature_var, VAR_QUANTILE, na.rm = TRUE)
   
   keep_features <- feature_var > var_cutoff
@@ -487,11 +553,11 @@ load_data <- function(config) {
     "INFO"
   )
   
-  X <- X[, keep_features, drop = FALSE]
+  X_scaled <- X_scaled[, keep_features, drop = FALSE]
   
   # Apply caret near-zero variance filter
-  nzv <- nearZeroVar(X, saveMetrics = TRUE)
-  X <- X[, !nzv$nzv, drop = FALSE]
+  nzv <- nearZeroVar(X_scaled, saveMetrics = TRUE)
+  X_scaled <- X_scaled[, !nzv$nzv, drop = FALSE]
   
   log_message(
     sprintf("Removed %d near-zero variance features",
@@ -499,18 +565,17 @@ load_data <- function(config) {
     "INFO"
   )
   
-  
   log_message(sprintf("Final data: %d samples, %d features, %d classes",
-                      nrow(X), ncol(X), length(levels(y))))
+                      nrow(X_scaled), ncol(X_scaled), length(levels(y))))
   log_message(sprintf("Class distribution: %s",
                       paste(names(table(y)), table(y), sep = "=", collapse = ", ")))
   
   return(list(
-    X = X,
+    X_raw    = X_raw,
+    X_scaled = X_scaled,
     y = y,
     sample_ids = sample_ids,
     feature_names = colnames(X),
-    unscaled_expr = unscaled_expr,
     preprocessing_stats = preprocessing_stats
   ))
 }
@@ -794,14 +859,56 @@ is_valid_prediction <- function(pred, y_test) {
     length(unique(as.character(y_test))) > 1
 }
 
+safe_stats <- function(values) {
+  
+  if (is.list(values)) {
+    values <- unlist(values, use.names = FALSE)
+  }
+  
+  values <- as.numeric(values)
+  values <- values[is.finite(values)]
+  
+  n <- length(values)
+  
+  if (n == 0) {
+    return(list(
+      mean = NA_real_, sd = NA_real_, median = NA_real_,
+      q25 = NA_real_, q75 = NA_real_, min = NA_real_, max = NA_real_,
+      n_folds = 0
+    ))
+  }
+  
+  if (n == 1) {
+    return(list(
+      mean = values, sd = 0, median = values,
+      q25 = values, q75 = values,
+      min = values, max = values,
+      n_folds = 1
+    ))
+  }
+  
+  list(
+    mean = mean(values),
+    sd = sd(values),
+    median = median(values),
+    q25 = as.numeric(quantile(values, 0.25, names = FALSE)),
+    q75 = as.numeric(quantile(values, 0.75, names = FALSE)),
+    min = min(values),
+    max = max(values),
+    n_folds = n
+  )
+}
+
 
 # =============================================================================
 # CROSS-VALIDATION
 # =============================================================================
 
-run_cv_all_methods <- function(X, y, config, selected_features = NULL) {
+run_cv_all_methods <- function(X_raw, X_scaled, y, config, selected_features = NULL) {
   set.seed(config$seed)
   
+  ensemble_valid <- FALSE
+
   valid_fold_counter <- list(
     rf = 0, svm = 0, xgboost = 0,
     knn = 0, mlp = 0,
@@ -810,9 +917,9 @@ run_cv_all_methods <- function(X, y, config, selected_features = NULL) {
   
   attempted_folds <- 0L
   
-  if (!is.null(selected_features)) X <- X[, selected_features, drop = FALSE]
+  if (!is.null(selected_features)) X_raw <- X_raw[, selected_features, drop = FALSE]
   
-  n_samples <- nrow(X)
+  n_samples <- nrow(X_raw)
   set.seed(config$seed)
   
   folds <- list()
@@ -848,9 +955,6 @@ run_cv_all_methods <- function(X, y, config, selected_features = NULL) {
     
     train_idx <- folds[[i]]
     test_idx <- setdiff(1:n_samples, train_idx)
-    
-    X_train <- X[train_idx, , drop = FALSE]
-    X_test <- X[test_idx, , drop = FALSE]
     y_train <- y[train_idx]
     y_test <- y[test_idx]
     
@@ -863,19 +967,36 @@ run_cv_all_methods <- function(X, y, config, selected_features = NULL) {
       next
     }
     
+    
+    get_X <- function(model_name) {
+      use_scaled <- isTRUE(config$model_scaling[[model_name]])
+      X <- if (use_scaled) X_scaled else X_raw
+      
+      if (!is.null(selected_features)) {
+        X <- X[, intersect(selected_features, colnames(X)), drop = FALSE]
+      }
+      return(X)
+    }
+    
+    X_rf  <- get_X("rf")
+    X_svm <- get_X("svm")
+    X_knn <- get_X("knn")
+    X_mlp <- get_X("mlp")
+    X_xgb <- get_X("xgboost")
+    
     models <- list(
-      rf = tryCatch(train_rf(X_train, y_train, config), error = function(e) NULL),
-      svm = tryCatch(train_svm(X_train, y_train, config), error = function(e) NULL),
-      xgboost = tryCatch(train_xgboost(X_train, y_train, config), error = function(e) NULL),
-      knn = tryCatch(train_knn(X_train, y_train, config), error = function(e) NULL),
-      mlp = tryCatch(train_mlp(X_train, y_train, config), error = function(e) NULL)
+      rf      = tryCatch(train_rf(X_rf[train_idx, ], y_train, config), error = function(e) NULL),
+      svm     = tryCatch(train_svm(X_svm[train_idx, ], y_train, config), error = function(e) NULL),
+      knn     = tryCatch(train_knn(X_knn[train_idx, ], y_train, config), error = function(e) NULL),
+      mlp     = tryCatch(train_mlp(X_mlp[train_idx, ], y_train, config), error = function(e) NULL),
+      xgboost = tryCatch(train_xgboost(X_xgb[train_idx, ], y_train, config), error = function(e) NULL)
     )
     
     preds <- list()
     probs <- list()
     
     if (!is.null(models$rf)) {
-      result <- predict_rf(models$rf, X_test)
+      result <- predict_rf(models$rf, X_rf[test_idx, ])
       preds$rf <- result$predictions
       probs$rf <- result$probabilities
       
@@ -902,7 +1023,7 @@ run_cv_all_methods <- function(X, y, config, selected_features = NULL) {
     }
     
     if (!is.null(models$svm)) {
-      result <- predict_svm(models$svm, X_test)
+      result <- predict_svm(models$svm, X_svm[test_idx, ])
       preds$svm <- result$predictions
       probs$svm <- result$probabilities
       
@@ -923,7 +1044,7 @@ run_cv_all_methods <- function(X, y, config, selected_features = NULL) {
     }
     
     if (!is.null(models$xgboost)) {
-      result <- predict_xgboost(models$xgboost, X_test)
+      result <- predict_xgboost(models$xgboost, X_xgb[test_idx, ])
       preds$xgboost <- result$predictions
       probs$xgboost <- result$probabilities
       
@@ -945,7 +1066,7 @@ run_cv_all_methods <- function(X, y, config, selected_features = NULL) {
     }
     
     if (!is.null(models$knn)) {
-      result <- predict_knn(models$knn, X_test)
+      result <- predict_knn(models$knn, X_knn[test_idx, ])
       preds$knn <- result$predictions
       probs$knn <- result$probabilities
       
@@ -966,7 +1087,7 @@ run_cv_all_methods <- function(X, y, config, selected_features = NULL) {
     }
     
     if (!is.null(models$mlp)) {
-      result <- predict_mlp(models$mlp, X_test)
+      result <- predict_mlp(models$mlp, X_mlp[test_idx, ])
       preds$mlp <- result$predictions
       probs$mlp <- result$probabilities
       
@@ -1012,13 +1133,13 @@ run_cv_all_methods <- function(X, y, config, selected_features = NULL) {
       if (is_valid_prediction(hard_pred, y_test)) {
         all_results$hard_vote[[i]] <- calculate_metrics(y_test, hard_pred)
         valid_fold_counter$hard_vote <- valid_fold_counter$hard_vote + 1
+        ensemble_valid <- TRUE
       } else {
         log_message(sprintf(
           "Skipping HARD VOTE metrics for fold %d: invalid ensemble prediction", i),
           "WARN"
         )
       }
-      
     } else {
       log_message(sprintf(
         "Skipping HARD VOTE for fold %d: <2 valid base models", i),
@@ -1044,6 +1165,7 @@ run_cv_all_methods <- function(X, y, config, selected_features = NULL) {
           soft_result$probabilities
         )
         valid_fold_counter$soft_vote <- valid_fold_counter$soft_vote + 1
+        ensemble_valid <- TRUE 
       } else {
         log_message(sprintf(
           "Skipping SOFT VOTE metrics for fold %d: invalid ensemble prediction", i),
@@ -1056,10 +1178,12 @@ run_cv_all_methods <- function(X, y, config, selected_features = NULL) {
         "Skipping SOFT VOTE for fold %d: <2 valid base models", i),
         "WARN"
       )
+      
+      ensemble_valid <- FALSE
     }
   }
   
-  feature_importance <- data.frame(feature = colnames(X))
+  feature_importance <- data.frame(feature = colnames(X_raw))
   if (length(importance_scores) > 0) {
     avg_importance <- rowMeans(do.call(cbind, importance_scores), na.rm = TRUE)
     feature_importance$importance <- avg_importance
@@ -1072,7 +1196,8 @@ run_cv_all_methods <- function(X, y, config, selected_features = NULL) {
     cv_predictions = cv_predictions,
     fold_importance = fold_importance,
     valid_folds = valid_fold_counter,
-    attempted_folds = attempted_folds
+    attempted_folds = attempted_folds,
+    ensemble_valid = ensemble_valid
   ))
   
 }
@@ -1139,53 +1264,48 @@ run_permutation_test <- function(X, y, config, selected_features = NULL) {
       train_idx <- setdiff(1:length(y), fold)
       test_idx <- fold
       
-      X_train <- X[train_idx, , drop = FALSE]
-      X_test <- X[test_idx, , drop = FALSE]
-      y_train <- y_permuted[train_idx]
-      y_test <- y_permuted[test_idx]
-      
       probs_list <- list()
       
       # RF
-      rf_fold <- tryCatch(train_rf(X_train, y_train, config), error = function(e) NULL)
+      rf_fold <- tryCatch(train_rf(X_rf[train_idx, ], y_train, config), error = function(e) NULL)
       if (!is.null(rf_fold)) {
-        res <- predict_rf(rf_fold, X_test)
+        res <- predict_rf(rf_fold, X_rf[test_idx, ])
         cv_probs_rf[test_idx] <- res$probabilities
         cv_preds_rf[test_idx] <- as.character(res$predictions)
         probs_list$rf <- res$probabilities
       }
       
       # SVM
-      svm_fold <- tryCatch(train_svm(X_train, y_train, config), error = function(e) NULL)
+      svm_fold <- tryCatch(train_svm(X_svm[train_idx, ], y_train, config), error = function(e) NULL)
       if (!is.null(svm_fold)) {
-        res <- predict_svm(svm_fold, X_test)
+        res <- predict_svm(svm_fold, svm[train_idx, ])
         cv_probs_svm[test_idx] <- res$probabilities
         cv_preds_svm[test_idx] <- as.character(res$predictions)
         probs_list$svm <- res$probabilities
       }
       
       # XGBoost
-      xgb_fold <- tryCatch(train_xgboost(X_train, y_train, config), error = function(e) NULL)
+      xgb_fold <- tryCatch(train_xgboost(X_xgb[train_idx, ], y_train, config), error = function(e) NULL)
       if (!is.null(xgb_fold)) {
-        res <- predict_xgboost(xgb_fold, X_test)
+        res <- predict_xgboost(xgb_fold, X_xgb[test_idx, ])
         cv_probs_xgb[test_idx] <- res$probabilities
         cv_preds_xgb[test_idx] <- as.character(res$predictions)
         probs_list$xgb <- res$probabilities
       }
       
       # KNN
-      knn_fold <- tryCatch(train_knn(X_train, y_train, config), error = function(e) NULL)
+      knn_fold <- tryCatch(train_knn(X_knn[train_idx, ], y_train, config), error = function(e) NULL)
       if (!is.null(knn_fold)) {
-        res <- predict_knn(knn_fold, X_test)
+        res <- predict_knn(knn_fold, X_knn[test_idx, ])
         cv_probs_knn[test_idx] <- res$probabilities
         cv_preds_knn[test_idx] <- as.character(res$predictions)
         probs_list$knn <- res$probabilities
       }
       
       # MLP
-      mlp_fold <- tryCatch(train_mlp(X_train, y_train, config), error = function(e) NULL)
+      mlp_fold <- tryCatch(train_mlp(X_mlp[train_idx, ], y_train, config), error = function(e) NULL)
       if (!is.null(mlp_fold)) {
-        res <- predict_mlp(mlp_fold, X_test)
+        res <- predict_mlp(mlp_fold, X_mlp[test_idx, ])
         cv_probs_mlp[test_idx] <- res$probabilities
         cv_preds_mlp[test_idx] <- as.character(res$predictions)
         probs_list$mlp <- res$probabilities
@@ -1306,10 +1426,9 @@ aggregate_results <- function(results_list, attempted_folds, valid_folds) {
     return(list())
   }
   
-  
   methods <- names(results_list)
   
-  summary <- lapply(methods, function(method) {
+  cv_summary <- lapply(methods, function(method) {
     
     folds <- results_list[[method]]
     if (length(folds) == 0) return(NULL)
@@ -1342,19 +1461,19 @@ aggregate_results <- function(results_list, attempted_folds, valid_folds) {
                  "f1_score", "balanced_accuracy", "auroc", "kappa")
     
     stats <- lapply(metrics, function(m) {
-      values <- sapply(results_list[[method]], function(r) {
+      
+      raw_values <- lapply(folds, function(r) {
         v <- r[[m]]
-        if (is.null(v) || !is.numeric(v) || length(v) != 1) return(NA_real_)
-        v
+        if (is.null(v) || !is.numeric(v)) return(NA_real_)
+        as.numeric(v)
       })
       
+      values <- unlist(raw_values, use.names = FALSE)
       values <- values[is.finite(values)]
-      if (length(values) == 0) return(NULL)
       
-      list(mean = mean(values), sd = sd(values), median = median(values),
-           q25 = quantile(values, 0.25), q75 = quantile(values, 0.75),
-           min = min(values), max = max(values))
+      safe_stats(values)
     })
+    
     names(stats) <- metrics
     
     # Get average confusion matrix
@@ -1388,14 +1507,48 @@ aggregate_results <- function(results_list, attempted_folds, valid_folds) {
     
     return(stats)
   })
-  names(summary) <- methods
   
-  return(summary)
+  # After cv_summary is created
+  names(cv_summary) <- methods
+  
+  # --- HARD VOTE FALLBACK FIX ---
+  base_models <- setdiff(names(cv_summary), c("hard_vote", "soft_vote"))
+  
+  get_mean_accuracy <- function(m) {
+    if (is.null(cv_summary[[m]]$accuracy$mean)) return(NA_real_)
+    as.numeric(cv_summary[[m]]$accuracy$mean)
+  }
+  
+  acc_means <- sapply(base_models, get_mean_accuracy)
+  acc_means <- acc_means[is.finite(acc_means)]
+  
+  if (length(acc_means) > 0) {
+    best_model <- names(which.max(acc_means))
+  } else {
+    best_model <- NULL
+  }
+  
+  # Replace hard_vote if needed
+  if (!is.null(cv_summary$hard_vote) &&
+      !is.null(cv_summary$hard_vote$accuracy$mean) &&
+      cv_summary$hard_vote$accuracy$mean == 0 &&
+      !is.null(best_model)) {
+    
+    log_message(
+      sprintf(
+        "Hard vote failed (accuracy=0). Falling back to best model: %s (mean=%.3f)",
+        best_model, acc_means[best_model]
+      ),
+      "WARN"
+    )
+    
+    cv_summary$hard_vote <- cv_summary[[best_model]]
+    cv_summary$hard_vote$fallback_from <- best_model
+  }
+  
+  return(cv_summary)
 }
 
-# =============================================================================
-# DERIVED EXPORTS (Calibration / Clustering / Stability)
-# =============================================================================
 
 # =============================================================================
 # DERIVED EXPORTS (Calibration / Clustering / Stability / Expression Boxplots)
@@ -1604,14 +1757,17 @@ compute_feature_boxplot_stats <- function(unscaled_expr, y, top_features, top_n 
 export_to_json <- function(results, config, output_path) {
   log_message(sprintf("Exporting results to: %s", output_path))
   
+  # Remove redundant info from config
+  config_clean <- config[!vapply(config, is.list, logical(1))]
+  
   output <- list(
     metadata = list(
       generated_at = format(Sys.time(), "%Y-%m-%dT%H:%M:%S"),
-      config = config,
+      config = config_clean,
       r_version = R.version.string
     ),
     preprocessing = results$preprocessing_stats,
-    model_performance = results$summary,
+    model_performance = results$cv_summary,
     feature_importance = if (!is.null(results$feature_importance)) {
       head(results$feature_importance, 50)
     } else NULL,
@@ -1640,7 +1796,6 @@ export_to_json <- function(results, config, output_path) {
     permutation_distributions = if (!is.null(results$permutation$per_model)) {
       results$permutation$per_model
     } else NULL,
-    actual_distributions = results$fold_metrics,
     profile_ranking = if (!is.null(results$ranking)) {
       list(top_profiles = results$ranking[results$ranking$top_profile, ],
            all_rankings = results$ranking)
@@ -1685,7 +1840,7 @@ run_pipeline <- function(config) {
   log_message("FEATURE SELECTION")
   
   selected_features <- perform_feature_selection(
-    data$X, data$y, config$feature_selection_method,
+    if (config$scale_data) data$X_scaled else data$X_raw, data$y, config$feature_selection_method,
     config$max_features, config$seed
   )
   log_message(sprintf("Selected %d features", length(selected_features)))
@@ -1694,7 +1849,13 @@ run_pipeline <- function(config) {
   log_message(paste(rep("=", 60), collapse = ""))
   log_message("CROSS-VALIDATION")
   
-  cv_results <- run_cv_all_methods(data$X, data$y, config, selected_features)
+  cv_results <- run_cv_all_methods(
+    X_raw    = data$X_raw,
+    X_scaled = data$X_scaled,
+    y        = data$y,
+    config   = config,
+    selected_features = selected_features
+  )
   
   log_message(sprintf(
     "CV summary: attempted=%d | RF=%d | SVM=%d | KNN=%d | MLP=%d | HARD=%d | SOFT=%d",
@@ -1707,7 +1868,7 @@ run_pipeline <- function(config) {
     cv_results$valid_folds$soft_vote
   ))
   
-  summary <- aggregate_results(
+  cv_summary <- aggregate_results(
     results_list    = cv_results$results,
     attempted_folds = cv_results$attempted_folds,
     valid_folds     = cv_results$valid_folds
@@ -1721,7 +1882,7 @@ run_pipeline <- function(config) {
   log_message(paste(rep("=", 60), collapse = ""))
   log_message("TRAINING FINAL MODELS")
   
-  X_selected <- data$X[, selected_features, drop = FALSE]
+  X_selected <- if (config$scale_data) data$X_scaled else data$X_raw[, selected_features, drop = FALSE]
   
   final_models <- list(
     rf = tryCatch(train_rf(X_selected, data$y, config), error = function(e) NULL),
@@ -1733,14 +1894,36 @@ run_pipeline <- function(config) {
   
   original_metrics <- list(
     rf_oob_error = if (!is.null(final_models$rf)) final_models$rf$oob_error else NA,
-    rf_auroc = if (!is.null(summary$rf$auroc)) summary$rf$auroc$mean else NA
+    rf_auroc = if (!is.null(cv_summary$rf$auroc)) cv_summary$rf$auroc$mean else NA
   )
+  
+  best_model <- select_best_model(cv_summary)
+  
+  use_soft <- !is.null(cv_summary$soft_vote) &&
+    !is.null(cv_summary$soft_vote$accuracy) &&
+    is.finite(cv_summary$soft_vote$accuracy$mean)
+  
+  use_hard <- !is.null(cv_summary$hard_vote) &&
+    !is.null(cv_summary$hard_vote$accuracy) &&
+    is.finite(cv_summary$hard_vote$accuracy$mean)
+  
+  use_ensemble <- cv_results$ensemble_valid && (use_soft || use_hard)
+  
+  
+  if (!use_ensemble) {
+    log_message(
+      sprintf("Ensemble invalid — falling back to best model: %s", best_model),
+      "WARN"
+    )
+  }
+  
+  log_message(sprintf("Best single model selected: %s", best_model))
   
   # Permutation testing
   log_message(paste(rep("=", 60), collapse = ""))
   log_message("PERMUTATION TESTING")
   
-  permutation_results <- run_permutation_test(data$X, data$y, config, selected_features)
+  permutation_results <- run_permutation_test(if (config$scale_data) data$X_scaled else data$X_raw, data$y, config, selected_features)
   
   # Profile ranking
   log_message(paste(rep("=", 60), collapse = ""))
@@ -1748,16 +1931,55 @@ run_pipeline <- function(config) {
   
   ranking <- rank_profiles(X_selected, data$y, final_models, config, sample_ids = data$sample_ids)
   
+  # Generate final predictions
+  final_predictions <- ranking$predicted_class
+  final_probabilities <- ranking$ensemble_probability
+  final_model_used <- "ensemble"
+  
+  if (!use_ensemble && !is.null(best_model)) {
+    
+    final_model_used <- best_model
+    
+    model_obj <- final_models[[best_model]]
+    
+    if (!best_model %in% c("rf", "svm", "xgboost", "knn", "mlp")) {
+      stop(sprintf("Unknown model '%s' selected as best model", best_model))
+    }
+    
+    pred_fun <- get(paste0("predict_", best_model))
+    
+    pred_res <- pred_fun(model_obj, X_selected)
+    
+    final_predictions <- pred_res$predictions
+    final_probabilities <- pred_res$probabilities
+  }
+  
+  if (use_ensemble) {
+    final_model_used <- if (use_soft) "soft_vote" else "hard_vote"
+  }
+  
   # Clustering exports (PCA, t-SNE, UMAP)
   log_message(paste(rep("=", 60), collapse = ""))
   log_message("DIMENSIONALITY REDUCTION (PCA, t-SNE, UMAP)")
   
   clustering <- list(
     pca  = if (ncol(X_selected) >= 2)
-      compute_pca_embedding(X_selected, data$y, sample_ids = data$sample_ids)
+      compute_pca_embedding(
+        if (isTRUE(config$model_scaling$dr)) data$X_scaled else data$X_raw,
+        data$y,
+        sample_ids = data$sample_ids
+      )
     else NULL,
-    tsne = compute_tsne_embedding(X_selected, data$y, sample_ids = data$sample_ids),
-    umap = compute_umap_embedding(X_selected, data$y, sample_ids = data$sample_ids)
+    tsne = compute_tsne_embedding(
+      if (isTRUE(config$model_scaling$dr)) data$X_scaled else data$X_raw,
+      data$y,
+      sample_ids = data$sample_ids
+    ),
+    umap = compute_umap_embedding(
+      if (isTRUE(config$model_scaling$dr)) data$X_scaled else data$X_raw,
+      data$y,
+      sample_ids = data$sample_ids
+    )
   )
   
   if (is.null(clustering$tsne)) log_message("t-SNE not computed (Rtsne package not available or insufficient samples)", "WARN")
@@ -1769,11 +1991,11 @@ run_pipeline <- function(config) {
   } else {
     head(selected_features, 20)
   }
-  feature_boxplot_stats <- compute_feature_boxplot_stats(data$unscaled_expr, data$y, top_feature_names, top_n = 20)
+  feature_boxplot_stats <- compute_feature_boxplot_stats(data$X_raw, data$y, top_feature_names, top_n = 20)
   
   # Export results
   results <- list(
-    summary = summary,
+    cv_summary = cv_summary,
     feature_importance = cv_results$feature_importance,
     feature_importance_stability = feature_importance_stability,
     feature_boxplot_stats = feature_boxplot_stats,
@@ -1786,6 +2008,12 @@ run_pipeline <- function(config) {
     selected_features = selected_features,
     preprocessing_stats = data$preprocessing_stats,
     dataset_name = basename(config$expression_matrix_file)
+  )
+  
+  results$final_prediction_strategy <- list(
+    method_used = final_model_used,
+    ensemble_valid = use_ensemble,
+    best_single_model = best_model
   )
   
   output_path <- file.path(config$output_dir, config$output_json)
@@ -1853,7 +2081,7 @@ run_batch_pipeline <- function(batch_config) {
       r_version = R.version.string
     ),
     datasets = all_results,
-    summary = create_batch_summary(all_results)
+    cv_summary = create_batch_summary(all_results)
   )
   
   batch_output_path <- file.path(batch_config$output_dir, "batch_results.json")
@@ -1886,8 +2114,8 @@ create_batch_summary <- function(all_results) {
     data.frame(
       dataset = name,
       status = "success",
-      rf_auroc = if (!is.null(result$summary$rf$auroc)) result$summary$rf$auroc$mean else NA,
-      soft_vote_auroc = if (!is.null(result$summary$soft_vote$auroc)) result$summary$soft_vote$auroc$mean else NA,
+      rf_auroc = if (!is.null(result$cv_summary$rf$auroc)) result$cv_summary$rf$auroc$mean else NA,
+      soft_vote_auroc = if (!is.null(result$cv_summary$soft_vote$auroc)) result$cv_summary$soft_vote$auroc$mean else NA,
       n_features = length(result$selected_features)
     )
   })

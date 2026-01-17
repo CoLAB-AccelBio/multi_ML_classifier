@@ -1,0 +1,1003 @@
+#!/usr/bin/env Rscript
+# =============================================================================
+# Multi-Method ML Classifier - FULL DATASET TRAINING VERSION v2
+# =============================================================================
+# Maintains exact JSON output format as original CV version
+# Trains on 100% of data without cross-validation
+# =============================================================================
+
+suppressPackageStartupMessages({
+  library(optparse)
+  library(caret)
+  library(randomForest)
+  library(e1071)
+  library(xgboost)
+  library(class)
+  library(nnet)
+  library(pROC)
+  library(jsonlite)
+  library(dplyr)
+  library(tidyr)
+})
+
+# =============================================================================
+# PARAMETERS
+# =============================================================================
+
+MIN_VALID_FOLD_FRACTION <- 0.3
+VAR_QUANTILE <- 0.25
+SCALE_DATA_DEFAULT <- FALSE   # data scaling before analysis
+MODEL_SCALING <- list(
+  rf      = FALSE,
+  svm     = TRUE,
+  knn     = TRUE,
+  mlp     = TRUE,
+  xgboost = FALSE,
+  dr      = TRUE   # PCA / t-SNE / UMAP
+)
+
+option_list <- list(
+  make_option(c("-e", "--expr"),
+              type = "character",
+              help = "Expression matrix file (rows=features, cols=samples)"),
+  
+  make_option(c("-a", "--annot"),
+              type = "character",
+              help = "Sample annotation file"),
+  
+  make_option(c("-t", "--target"),
+              type = "character",
+              help = "Target variable column name"),
+  
+  make_option(c("-m", "--mode"),
+              type = "character",
+              default = "full",
+              help = "Analysis mode: full or fast [default: %default]"),
+  
+  make_option(c("--scale"),
+              action = "store_true",
+              default = FALSE,
+              help = "Scale expression data (Z-score per feature)"),
+  
+  make_option(c("-o", "--outdir"),
+              type = "character",
+              default = "results",
+              help = "Output directory [default: %default]"),
+  
+  make_option(c("-s", "--seed"),
+              type = "integer",
+              default = 42,
+              help = "Random seed [default: %default]"),
+  
+  make_option(c("-p", "--n_permutations"),
+              type = "integer",
+              default = 100,
+              help = "Number of permutations [default: %default]")
+)
+
+opt <- parse_args(OptionParser(option_list = option_list))
+
+# Optional libraries
+tsne_available <- requireNamespace("Rtsne", quietly = TRUE)
+umap_available <- requireNamespace("umap", quietly = TRUE)
+
+if (tsne_available) library(Rtsne)
+if (umap_available) library(umap)
+
+# =============================================================================
+# CONFIGURATION
+# =============================================================================
+
+config <- list(
+  expression_matrix_file = "expression_matrix.txt",
+  annotation_file = "sample_annotation.txt",
+  target_variable = "diagnosis",
+  analysis_mode = "full",
+  scale_data = SCALE_DATA_DEFAULT,
+  model_scaling <- MODEL_SCALING,
+  seed = 42,
+  top_percent = 10,
+  feature_selection_method = "stepwise",
+  max_features = 50,
+  n_permutations = 100,
+  rf_ntree = 500,
+  rf_mtry = NULL,
+  svm_kernel = "radial",
+  svm_cost = 1,
+  svm_gamma = NULL,
+  xgb_nrounds = 100,
+  xgb_max_depth = 6,
+  xgb_eta = 0.3,
+  knn_k = 5,
+  mlp_size = 10,
+  mlp_decay = 0.01,
+  mlp_maxit = 200,
+  batch_datasets = NULL,
+  output_dir = "./results",
+  output_json = "ml_results.json"
+)
+
+# Override from command-line
+if (!is.null(opt$expr)) config$expression_matrix_file <- opt$expr
+if (!is.null(opt$annot)) config$annotation_file <- opt$annot
+if (!is.null(opt$target)) config$target_variable <- opt$target
+if (!is.null(opt$mode)) config$analysis_mode <- opt$mode
+if (!is.null(opt$scale)) config$scale_data <- opt$scale
+if (!is.null(opt$outdir)) config$output_dir <- opt$outdir
+if (!is.null(opt$seed)) config$seed <- opt$seed
+if (!is.null(opt$n_permutations)) config$n_permutations <- opt$n_permutations
+
+# =============================================================================
+# FAST MODE
+# =============================================================================
+
+get_effective_config <- function(config) {
+  if (config$analysis_mode == "fast") {
+    log_message("FAST MODE ENABLED", "WARN")
+    config$n_permutations <- 10
+    config$rf_ntree <- 50
+    config$xgb_nrounds <- 20
+    config$mlp_maxit <- 50
+    config$max_features <- min(config$max_features, 10)
+    config$feature_selection_method <- "none"
+  }
+  return(config)
+}
+
+# =============================================================================
+# UTILITY FUNCTIONS
+# =============================================================================
+
+log_message <- function(msg, level = "INFO") {
+  timestamp <- format(Sys.time(), "%Y-%m-%d %H:%M:%S")
+  cat(sprintf("[%s] %s: %s\n", timestamp, level, msg))
+}
+
+show_progress <- function(current, total, prefix = "Progress", width = 40) {
+  pct <- current / total
+  filled <- floor(pct * width)
+  empty <- width - filled
+  bar <- paste0(
+    "\r", prefix, " [",
+    paste(rep("=", filled), collapse = ""),
+    ifelse(filled < width, ">", ""),
+    paste(rep(" ", max(0, empty - 1)), collapse = ""),
+    "] ",
+    sprintf("%3d%%", round(pct * 100)),
+    " (", current, "/", total, ")"
+  )
+  cat(bar)
+  if (current == total) cat("\n")
+  flush.console()
+}
+
+# =============================================================================
+# DATA LOADING
+# =============================================================================
+
+load_and_preprocess_data <- function(config) {
+  log_message("Loading expression matrix...")
+  expr_mat <- read.delim(config$expression_matrix_file, 
+                         stringsAsFactors = FALSE,
+                         row.names = 1,
+                         check.names = FALSE)
+  
+  log_message("Loading sample annotations...")
+  annot <- read.delim(config$annotation_file, stringsAsFactors = FALSE)
+  
+  if (!(config$target_variable %in% colnames(annot))) {
+    stop(sprintf("Target variable '%s' not found", config$target_variable))
+  }
+  
+  # Get sample IDs from expression matrix
+  sample_ids <- colnames(expr_mat)
+  log_message(sprintf("Expression matrix has %d samples", length(sample_ids)))
+  
+  # Find sample ID column in annotation (first column or look for common pattern)
+  annot_sample_col <- colnames(annot)[1]
+  annot_samples <- annot[[annot_sample_col]]
+  
+  # Check for target variable
+  if (!config$target_variable %in% colnames(annot)) {
+    stop(sprintf("Target variable '%s' not found in annotation file. Available: %s",
+                 config$target_variable, paste(colnames(annot), collapse = ", ")))
+  }
+  
+  # Find common samples
+  common_samples <- intersect(sample_ids, annot_samples)
+  log_message(sprintf("Found %d common samples between expression matrix and annotation", length(common_samples)))
+  
+  if (length(common_samples) == 0) {
+    stop("No common samples found. Ensure column names in expression matrix match sample IDs in annotation.")
+  }
+  
+  # Filter and align data
+  expr_mat <- expr_mat[, colnames(expr_mat) %in% common_samples, drop = FALSE]
+  annot <- annot[annot[[annot_sample_col]] %in% common_samples, ]
+  sample_ids <- colnames(expr_mat)
+  
+  # Sort to ensure alignment
+  expr_mat <- expr_mat[, order(colnames(expr_mat)), drop = FALSE]
+  annot <- annot[order(annot[[annot_sample_col]]), ]
+  
+  # Extract target variable
+  y <- factor(annot[[config$target_variable]])
+  
+  # Check for and remove samples with NA in target
+  na_idx <- is.na(y)
+  if (any(na_idx)) {
+    log_message(sprintf("Removing %d samples with NA in target variable", sum(na_idx)), "WARN")
+    keep_samples <- !na_idx
+    expr_mat <- expr_mat[, keep_samples, drop = FALSE]
+    y <- y[keep_samples]
+    sample_ids <- sample_ids[keep_samples]
+  }
+  
+  
+  ## Transpose
+  expr_mat <- as.data.frame(t(expr_mat))
+  
+  # Ensure expr_mat is numeric
+  expr_mat <- as.data.frame(lapply(expr_mat, function(x) {
+    if (is.character(x)) as.numeric(x) else x
+  }))
+  
+  # Remove constant columns
+  constant_cols <- sapply(expr_mat, function(x) length(unique(x[!is.na(x)])) <= 1)
+  if (any(constant_cols)) {
+    log_message(sprintf("Removing %d constant columns", sum(constant_cols)), "WARN")
+    preprocessing_stats$constant_features_removed <- sum(constant_cols)
+    expr_mat <- expr_mat[, !constant_cols]
+  }
+  
+  # Handle missing values
+  if (any(is.na(expr_mat))) {
+    log_message("Imputing missing values with median", "WARN")
+    expr_mat <- as.data.frame(lapply(expr_mat, function(x) {
+      if (is.numeric(x)) x[is.na(x)] <- median(x, na.rm = TRUE)
+      return(x)
+    }))
+  }
+  
+  # Store unscaled expression for boxplot export (subset to current features)
+  X_raw <- expr_mat
+  
+  # --------------------------------------------------
+  # Optional Z-score scaling (per feature)
+  # --------------------------------------------------
+  
+  X_scaled <- expr_mat
+  
+  if (isTRUE(config$scale_data)) {
+    
+    log_message("Preparing scaled data matrix (Z-score per feature)", "INFO")
+    
+    feature_sd <- apply(X_scaled, 2, sd, na.rm = TRUE)
+    nonzero_sd <- feature_sd > 0
+    
+    if (any(!nonzero_sd)) {
+      log_message(sprintf(
+        "Removed %d zero-variance features before scaling",
+        sum(!nonzero_sd)
+      ), "WARN")
+    }
+    
+    X_scaled <- X_scaled[, nonzero_sd, drop = FALSE]
+    
+    X_scaled <- as.data.frame(
+      t(apply(X_scaled, 1, function(x) scale(as.numeric(x))))
+    )
+    
+    colnames(X_scaled) <- colnames(X_raw)[nonzero_sd]
+    rownames(X_scaled) <- rownames(X_raw)
+  }
+  
+  
+  # ------------------------------------------------------------------
+  # Variance-based feature filtering (CRITICAL for speed & stability)
+  # ------------------------------------------------------------------
+  
+  feature_var <- apply(X_scaled, 2, var, na.rm = TRUE)
+  
+  # Remove bottom X_scaled% of variance
+  var_cutoff <- quantile(feature_var, VAR_QUANTILE, na.rm = TRUE)
+  
+  keep_features <- feature_var > var_cutoff
+  
+  log_message(
+    sprintf("Variance filtering: kept %d/%d features (%.1f%%)",
+            sum(keep_features),
+            length(keep_features),
+            100 * sum(keep_features) / length(keep_features)),
+    "INFO"
+  )
+  
+  X_scaled <- X_scaled[, keep_features, drop = FALSE]
+  
+  # Apply caret near-zero variance filter
+  nzv <- nearZeroVar(X_scaled, saveMetrics = TRUE)
+  X_scaled <- X_scaled[, !nzv$nzv, drop = FALSE]
+  
+  log_message(
+    sprintf("Removed %d near-zero variance features",
+            sum(nzv$nzv)),
+    "INFO"
+  )
+  
+  log_message(sprintf("Final data: %d samples, %d features, %d classes",
+                      nrow(X_scaled), ncol(X_scaled), length(levels(y))))
+  log_message(sprintf("Class distribution: %s",
+                      paste(names(table(y)), table(y), sep = "=", collapse = ", ")))
+  
+  unscaled_expr <- X_raw[keep_features, , drop = FALSE]
+  
+  # Final consistency check
+  if (nrow(X_raw) != length(y) || nrow(X_raw) != length(sample_ids)) {
+    stop(sprintf("Data dimension mismatch: X_raw has %d rows, y has %d elements, sample_ids has %d elements",
+                 nrow(X_raw), length(y), length(sample_ids)))
+  }
+  
+  log_message(sprintf("Data dimensions verified: %d samples, %d features", nrow(X_raw), ncol(X_raw)))
+  
+  # Convert table to list for JSON compatibility
+  class_dist <- table(y)
+  class_dist_list <- setNames(as.numeric(class_dist), names(class_dist))
+  
+  preprocessing_stats <- list(
+    original_samples = length(sample_ids),
+    original_features = nrow(expr_mat),
+    missing_values = 0,
+    missing_pct = 0,
+    class_distribution = class_dist_list,
+    constant_features_removed = 0
+  )
+  
+  return(list(
+    X_raw = X_raw,
+    X_scaled = X_scaled,
+    y = y,
+    sample_ids = sample_ids,
+    unscaled_expr = unscaled_expr,
+    preprocessing_stats = preprocessing_stats,
+    n_samples = nrow(X_raw),
+    n_features = ncol(X_raw)
+  ))
+}
+
+# =============================================================================
+# FEATURE SELECTION
+# =============================================================================
+
+perform_feature_selection <- function(X, y, config) {
+  if (config$feature_selection_method == "none") {
+    selected_features <- colnames(X)
+    importance_df <- data.frame(
+      feature = selected_features,
+      importance = rep(1, length(selected_features)),
+      stringsAsFactors = FALSE
+    )
+    return(list(
+      selected_features = selected_features,
+      feature_importance = importance_df,
+      feature_importance_stability = NULL
+    ))
+  }
+  
+  log_message("Performing feature selection...")
+  
+  # Use RF for feature importance
+  rf_temp <- randomForest(x = X, y = y, ntree = 100, importance = TRUE)
+  importance_scores <- importance(rf_temp)[, "MeanDecreaseGini"]
+  
+  n_select <- min(config$max_features, ncol(X))
+  top_indices <- order(importance_scores, decreasing = TRUE)[1:n_select]
+  selected_features <- colnames(X)[top_indices]
+  
+  importance_df <- data.frame(
+    feature = names(sort(importance_scores, decreasing = TRUE)),
+    importance = sort(importance_scores, decreasing = TRUE),
+    stringsAsFactors = FALSE
+  )
+  
+  # Create stability metrics (single value since no CV)
+  stability_df <- lapply(selected_features, function(feat) {
+    list(
+      feature = feat,
+      mean_rank = which(importance_df$feature == feat),
+      sd_rank = 0,
+      top_n_frequency = 1
+    )
+  })
+  
+  log_message(sprintf("Selected %d features", length(selected_features)))
+  
+  return(list(
+    selected_features = selected_features,
+    feature_importance = head(importance_df, 20),
+    feature_importance_stability = stability_df
+  ))
+}
+
+# =============================================================================
+# MODEL TRAINING
+# =============================================================================
+
+train_all_models <- function(X_raw, X_scaled, y, config) {
+  log_message("Training models on full dataset...")
+  set.seed(config$seed)
+  
+  results <- list()
+  
+  X_rf  <- if (isTRUE(config$model_scaling$rf)) X_scaled else X_raw
+  X_svm <- if (isTRUE(config$model_scaling$svm)) X_scaled else X_raw
+  X_xgb <- if (isTRUE(config$model_scaling$xgboost)) X_scaled else X_raw
+  X_knn <- if (isTRUE(config$model_scaling$knn)) X_scaled else X_raw
+  X_mlp <- if (isTRUE(config$model_scaling$mlp)) X_scaled else X_raw
+  
+  
+  log_message(sprintf(
+    "Scaling settings: RF=%s | SVM=%s | XGB=%s | KNN=%s | MLP=%s | DR=%s",
+    config$model_scaling$rf,
+    config$model_scaling$svm,
+    config$model_scaling$xgboost,
+    config$model_scaling$knn,
+    config$model_scaling$mlp,
+    config$model_scaling$dr
+  ))
+  
+  # Random Forest
+  log_message("  Training Random Forest...")
+  mtry_val <- if (is.null(config$rf_mtry)) max(1, floor(sqrt(ncol(X_raw)))) else config$rf_mtry
+  rf_model <- randomForest(x = X_rf, y = y, ntree = config$rf_ntree, mtry = mtry_val, importance = TRUE)
+  rf_pred <- rf_model$predicted
+  rf_prob <- rf_model$votes[, levels(y)[2]]
+  results$rf <- compute_metrics(rf_pred, y, rf_prob)
+  results$rf$model <- rf_model
+  
+  # SVM
+  log_message("  Training SVM...")
+  gamma_val <- if (is.null(config$svm_gamma)) 1/ncol(X_raw) else config$svm_gamma
+  svm_model <- svm(x = X_svm, y = y, kernel = config$svm_kernel, 
+                   cost = config$svm_cost, gamma = gamma_val, probability = TRUE)
+  svm_pred <- predict(svm_model, X_raw, probability = TRUE)
+  svm_prob <- attr(svm_pred, "probabilities")[, levels(y)[2]]
+  results$svm <- compute_metrics(svm_pred, y, svm_prob)
+  results$svm$model <- svm_model
+  
+  # XGBoost
+  log_message("  Training XGBoost...")
+  y_numeric <- as.numeric(y) - 1
+  xgb_matrix <- xgb.DMatrix(data = as.matrix(X_xgb), label = y_numeric)
+  xgb_model <- xgb.train(
+    data = xgb_matrix,  # xgb_matrix should be created with label included
+    params = list(
+      objective = "binary:logistic",
+      learning_rate = 0.3  # changed from 'eta'
+    ),
+    nrounds = config$xgb_nrounds,
+    verbose = 0  # or remove this line
+  )
+  xgb_prob <- predict(xgb_model, xgb_matrix)
+  xgb_pred <- factor(ifelse(xgb_prob > 0.5, levels(y)[2], levels(y)[1]), levels = levels(y))
+  results$xgboost <- compute_metrics(xgb_pred, y, xgb_prob)
+  results$xgboost$model <- xgb_model
+  
+  # KNN
+  log_message("  Training KNN...")
+  knn_pred <- knn(train = X_knn, test = X_raw, cl = y, k = config$knn_k, prob = TRUE)
+  knn_prob <- attr(knn_pred, "prob")
+  knn_prob <- ifelse(knn_pred == levels(y)[2], knn_prob, 1 - knn_prob)
+  results$knn <- compute_metrics(knn_pred, y, knn_prob)
+  results$knn$model <- list(X_train = X_raw, y_train = y, k = config$knn_k)
+  
+  # MLP
+  log_message("  Training MLP...")
+  y_mlp <- class.ind(y)
+  mlp_model <- nnet(x = X_mlp, y = y_mlp, size = config$mlp_size,
+                    decay = config$mlp_decay, maxit = config$mlp_maxit, trace = FALSE)
+  mlp_pred_mat <- predict(mlp_model, X_raw)
+  
+  # Identify positive class (same convention as elsewhere)
+  pos_class <- levels(y)[2]
+  
+  # Use column name if present
+  if (!is.null(colnames(mlp_pred_mat)) && pos_class %in% colnames(mlp_pred_mat)) {
+    mlp_prob <- mlp_pred_mat[, pos_class]
+  } else {
+    # fallback: assume 2nd column is positive
+    mlp_prob <- mlp_pred_mat[, 2]
+  }
+  mlp_pred <- factor(
+    ifelse(mlp_prob > 0.5, levels(y)[2], levels(y)[1]),
+    levels = levels(y)
+  )
+  results$mlp <- compute_metrics(mlp_pred, y, mlp_prob)
+  results$mlp$model <- mlp_model
+  
+  # Ensemble
+  log_message("  Creating ensemble...")
+  all_preds <- data.frame(
+    rf = rf_pred, svm = svm_pred, xgboost = xgb_pred,
+    knn = knn_pred, mlp = mlp_pred
+  )
+  hard_vote <- apply(all_preds, 1, function(row) names(which.max(table(row))))
+  hard_vote <- factor(hard_vote, levels = levels(y))
+  
+  all_probs <- data.frame(rf = rf_prob, svm = svm_prob, xgboost = xgb_prob,
+                          knn = knn_prob, mlp = mlp_prob)
+  soft_vote_prob <- rowMeans(all_probs, na.rm = TRUE)
+  soft_vote <- factor(ifelse(soft_vote_prob > 0.5, levels(y)[2], levels(y)[1]), levels = levels(y))
+  
+  results$hard_vote <- compute_metrics(hard_vote, y, soft_vote_prob)
+  results$soft_vote <- compute_metrics(soft_vote, y, soft_vote_prob)
+  
+  return(results)
+}
+
+compute_metrics <- function(pred, actual, prob) {
+  cm <- confusionMatrix(pred, actual)
+  
+  # Calculate all metrics
+  accuracy <- as.numeric(cm$overall["Accuracy"])
+  sensitivity <- as.numeric(cm$byClass["Sensitivity"])
+  specificity <- as.numeric(cm$byClass["Specificity"])
+  precision <- as.numeric(cm$byClass["Pos Pred Value"])
+  
+  f1 <- 2 * (precision * sensitivity) / (precision + sensitivity)
+  if (is.na(f1) || !is.finite(f1)) f1 <- 0
+  
+  balanced_accuracy <- (sensitivity + specificity) / 2
+  kappa <- as.numeric(cm$overall["Kappa"])
+  
+  # ROC and AUROC
+  roc_obj <- tryCatch({
+    roc(actual, prob, quiet = TRUE)
+  }, error = function(e) NULL)
+  
+  auroc <- if (!is.null(roc_obj)) as.numeric(auc(roc_obj)) else NA
+  
+  # ROC curve points
+  roc_curve <- if (!is.null(roc_obj)) {
+    coords_df <- coords(roc_obj, x = seq(0, 1, by = 0.02), input = "specificity", ret = c("sensitivity", "specificity"))
+    lapply(1:nrow(coords_df), function(i) {
+      list(fpr = 1 - coords_df$specificity[i], tpr = coords_df$sensitivity[i])
+    })
+  } else NULL
+  
+  # Confusion matrix
+  cm_table <- cm$table
+  confusion <- list(
+    tp = as.numeric(cm_table[2, 2]),
+    tn = as.numeric(cm_table[1, 1]),
+    fp = as.numeric(cm_table[2, 1]),
+    fn = as.numeric(cm_table[1, 2])
+  )
+  
+  # Return in format matching CV output (single values replicated for mean/sd/etc)
+  list(
+    accuracy = accuracy,
+    sensitivity = sensitivity,
+    specificity = specificity,
+    precision = precision,
+    f1_score = f1,
+    balanced_accuracy = balanced_accuracy,
+    auroc = auroc,
+    kappa = kappa,
+    confusion_matrix = confusion,
+    roc_curve = roc_curve,
+    predictions = pred,
+    probabilities = prob
+  )
+}
+
+# =============================================================================
+# PERMUTATION TESTING
+# =============================================================================
+
+run_permutation_test <- function(X_raw, X_scaled, y, config) {
+  log_message(sprintf("Running permutation test (%d permutations)...", config$n_permutations))
+  set.seed(config$seed)
+  
+  null_aurocs <- list(rf = numeric(), svm = numeric(), xgboost = numeric(),
+                      knn = numeric(), mlp = numeric(), soft_vote = numeric())
+  null_accuracy <- list(rf = numeric(), svm = numeric(), xgboost = numeric(),
+                        knn = numeric(), mlp = numeric(), soft_vote = numeric())
+  
+  for (i in 1:config$n_permutations) {
+    show_progress(i, config$n_permutations, "Permutation test")
+    
+    y_perm <- sample(y)
+    
+    # Train models on permuted data
+    perm_results <- train_all_models(X_raw, X_scaled, y_perm, config)
+    
+    for (method in names(null_aurocs)) {
+      if (!is.null(perm_results[[method]])) {
+        null_aurocs[[method]] <- c(null_aurocs[[method]], perm_results[[method]]$auroc)
+        null_accuracy[[method]] <- c(null_accuracy[[method]], perm_results[[method]]$accuracy)
+      }
+    }
+  }
+  
+  return(list(
+    null_aurocs = null_aurocs,
+    null_accuracy = null_accuracy
+  ))
+}
+
+# =============================================================================
+# CALIBRATION CURVES
+# =============================================================================
+
+compute_calibration_curves <- function(results, y) {
+  log_message("Computing calibration curves...")
+  
+  calibration_curves <- list()
+  methods <- c("rf", "svm", "xgboost", "knn", "mlp", "soft_vote")
+  
+  for (method in methods) {
+    if (is.null(results[[method]])) next
+    
+    prob <- results[[method]]$probabilities
+    actual <- as.numeric(y) - 1
+    
+    # Create bins
+    bins <- cut(prob, breaks = seq(0, 1, by = 0.1), include.lowest = TRUE)
+    bin_stats <- tapply(1:length(prob), bins, function(idx) {
+      list(
+        bin = levels(bins)[unique(as.numeric(bins[idx]))],
+        mean_pred = mean(prob[idx]),
+        frac_pos = mean(actual[idx]),
+        n = length(idx),
+        bin_center = mean(prob[idx]),
+        mean_pred_pct = mean(prob[idx]) * 100,
+        frac_pos_pct = mean(actual[idx]) * 100
+      )
+    })
+    
+    calibration_curves[[method]] <- bin_stats[!sapply(bin_stats, is.null)]
+  }
+  
+  return(calibration_curves)
+}
+
+# =============================================================================
+# DIMENSIONALITY REDUCTION
+# =============================================================================
+
+compute_pca_embedding <- function(X, y, sample_ids) {
+  if (ncol(X) < 2) return(NULL)
+  
+  # Verify dimensions match
+  if (nrow(X) != length(y) || nrow(X) != length(sample_ids)) {
+    log_message(sprintf("PCA dimension mismatch: X=%d rows, y=%d, sample_ids=%d", 
+                        nrow(X), length(y), length(sample_ids)), "ERROR")
+    log_message("Attempting to fix by using X dimensions...", "WARN")
+    
+    # Use only the samples that exist in X
+    n_samples <- nrow(X)
+    if (length(y) > n_samples) y <- y[1:n_samples]
+    if (length(sample_ids) > n_samples) sample_ids <- sample_ids[1:n_samples]
+  }
+  
+  pca_result <- prcomp(X, center = TRUE, scale. = TRUE)
+  pca_df <- data.frame(
+    x = pca_result$x[, 1],
+    y = pca_result$x[, 2],
+    sample_id = sample_ids,
+    actual_class = as.character(y),
+    stringsAsFactors = FALSE
+  )
+  
+  list(points = lapply(1:nrow(pca_df), function(i) as.list(pca_df[i,])))
+}
+
+compute_tsne_embedding <- function(X, y, sample_ids) {
+  if (!tsne_available || nrow(X) < 10) return(NULL)
+  
+  # Verify dimensions match
+  if (nrow(X) != length(y) || nrow(X) != length(sample_ids)) {
+    log_message(sprintf("t-SNE dimension mismatch: X=%d rows, y=%d, sample_ids=%d", 
+                        nrow(X), length(y), length(sample_ids)), "WARN")
+    n_samples <- nrow(X)
+    if (length(y) > n_samples) y <- y[1:n_samples]
+    if (length(sample_ids) > n_samples) sample_ids <- sample_ids[1:n_samples]
+  }
+  
+  tryCatch({
+    set.seed(42)
+    tsne_result <- Rtsne(X, dims = 2, perplexity = min(30, floor((nrow(X)-1)/3)),
+                         check_duplicates = FALSE, pca = TRUE, verbose = FALSE)
+    tsne_df <- data.frame(
+      x = tsne_result$Y[, 1],
+      y = tsne_result$Y[, 2],
+      sample_id = sample_ids,
+      actual_class = as.character(y),
+      stringsAsFactors = FALSE
+    )
+    list(points = lapply(1:nrow(tsne_df), function(i) as.list(tsne_df[i,])))
+  }, error = function(e) NULL)
+}
+
+compute_umap_embedding <- function(X, y, sample_ids) {
+  if (!umap_available || nrow(X) < 10) return(NULL)
+  
+  # Verify dimensions match
+  if (nrow(X) != length(y) || nrow(X) != length(sample_ids)) {
+    log_message(sprintf("UMAP dimension mismatch: X=%d rows, y=%d, sample_ids=%d", 
+                        nrow(X), length(y), length(sample_ids)), "WARN")
+    n_samples <- nrow(X)
+    if (length(y) > n_samples) y <- y[1:n_samples]
+    if (length(sample_ids) > n_samples) sample_ids <- sample_ids[1:n_samples]
+  }
+  
+  tryCatch({
+    umap_result <- umap::umap(X)
+    umap_df <- data.frame(
+      x = umap_result$layout[, 1],
+      y = umap_result$layout[, 2],
+      sample_id = sample_ids,
+      actual_class = as.character(y),
+      stringsAsFactors = FALSE
+    )
+    list(points = lapply(1:nrow(umap_df), function(i) as.list(umap_df[i,])))
+  }, error = function(e) NULL)
+}
+
+# =============================================================================
+# PROFILE RANKING
+# =============================================================================
+
+rank_profiles <- function(results, y, sample_ids) {
+  log_message("Ranking sample profiles...")
+  
+  ensemble_prob <- results$soft_vote$probabilities
+  predicted_class <- as.character(results$soft_vote$predictions)
+  actual_class <- as.character(y)
+  
+  # Calculate confidence and rank
+  confidence <- abs(ensemble_prob - 0.5) * 2
+  rank_order <- order(ensemble_prob, decreasing = TRUE)
+  
+  profiles <- lapply(1:length(ensemble_prob), function(i) {
+    list(
+      sample_index = i - 1,  # 0-indexed
+      actual_class = actual_class[i],
+      ensemble_probability = ensemble_prob[i],
+      predicted_class = predicted_class[i],
+      confidence = confidence[i],
+      correct = predicted_class[i] == actual_class[i],
+      rank = which(rank_order == i),
+      top_profile = which(rank_order == i) <= 10
+    )
+  })
+  
+  # Reorder by rank
+  profiles[rank_order]
+}
+
+# =============================================================================
+# FEATURE BOXPLOT STATS
+# =============================================================================
+
+compute_feature_boxplot_stats <- function(unscaled_expr, y, features) {
+  stats_list <- list()
+  
+  for (feat in features) {
+    if (!feat %in% colnames(unscaled_expr)) next
+    
+    expr <- unscaled_expr[[feat]]
+    stats_by_class <- lapply(levels(y), function(cls) {
+      vals <- expr[y == cls]
+      list(
+        class = cls,
+        min = min(vals, na.rm = TRUE),
+        q1 = quantile(vals, 0.25, na.rm = TRUE),
+        median = median(vals, na.rm = TRUE),
+        q3 = quantile(vals, 0.75, na.rm = TRUE),
+        max = max(vals, na.rm = TRUE),
+        mean = mean(vals, na.rm = TRUE),
+        n = length(vals)
+      )
+    })
+    
+    stats_list[[feat]] <- stats_by_class
+  }
+  
+  return(stats_list)
+}
+
+# =============================================================================
+# BUILD JSON OUTPUT
+# =============================================================================
+
+build_json_output <- function(data, results, feature_selection, permutation_results, 
+                              calibration_curves, clustering, profile_ranking, config) {
+  
+  # Format model performance (matching CV output format)
+  model_performance <- list()
+  methods <- c("rf", "svm", "xgboost", "knn", "mlp", "hard_vote", "soft_vote")
+  
+  for (method in methods) {
+    if (is.null(results[[method]])) next
+    
+    m <- results[[method]]
+    # Since we have single training values, set mean=median=min=max=value, sd=0
+    model_performance[[method]] <- list(
+      accuracy = list(mean = m$accuracy, sd = 0, median = m$accuracy, 
+                     q25 = m$accuracy, q75 = m$accuracy,
+                     min = m$accuracy, max = m$accuracy),
+      sensitivity = list(mean = m$sensitivity, sd = 0, median = m$sensitivity,
+                        q25 = m$sensitivity, q75 = m$sensitivity,
+                        min = m$sensitivity, max = m$sensitivity),
+      specificity = list(mean = m$specificity, sd = 0, median = m$specificity,
+                        q25 = m$specificity, q75 = m$specificity,
+                        min = m$specificity, max = m$specificity),
+      precision = list(mean = m$precision, sd = 0, median = m$precision,
+                      q25 = m$precision, q75 = m$precision,
+                      min = m$precision, max = m$precision),
+      f1_score = list(mean = m$f1_score, sd = 0, median = m$f1_score,
+                     q25 = m$f1_score, q75 = m$f1_score,
+                     min = m$f1_score, max = m$f1_score),
+      balanced_accuracy = list(mean = m$balanced_accuracy, sd = 0, median = m$balanced_accuracy,
+                              q25 = m$balanced_accuracy, q75 = m$balanced_accuracy,
+                              min = m$balanced_accuracy, max = m$balanced_accuracy),
+      auroc = list(mean = m$auroc, sd = 0, median = m$auroc,
+                  q25 = m$auroc, q75 = m$auroc,
+                  min = m$auroc, max = m$auroc),
+      kappa = list(mean = m$kappa, sd = 0, median = m$kappa,
+                  q25 = m$kappa, q75 = m$kappa,
+                  min = m$kappa, max = m$kappa),
+      confusion_matrix = m$confusion_matrix,
+      roc_curve = m$roc_curve
+    )
+  }
+  
+  # Permutation testing summary
+  perm_testing <- list()
+  for (method in c("rf", "svm", "xgboost", "knn", "mlp", "soft_vote")) {
+    if (length(permutation_results$null_aurocs[[method]]) > 0) {
+      null_auroc <- permutation_results$null_aurocs[[method]]
+      actual_auroc <- results[[method]]$auroc
+      p_val <- mean(null_auroc >= actual_auroc)
+      
+      perm_testing[[paste0(method, "_auroc")]] <- list(
+        permuted_mean = mean(null_auroc),
+        permuted_sd = sd(null_auroc),
+        original = actual_auroc,
+        p_value = p_val
+      )
+    }
+  }
+  
+  # Feature boxplot stats
+  top_features <- head(feature_selection$feature_importance$feature, 20)
+  feature_boxplot_stats <- compute_feature_boxplot_stats(data$unscaled_expr, data$y, top_features)
+  
+  # Remove redundant info from config
+  config_clean <- config[!vapply(config, is.list, logical(1))]
+  
+  # Build final output
+  output <- list(
+    metadata = list(
+      generated_at = format(Sys.time(), "%Y-%m-%dT%H:%M:%S"),
+      config = config_clean,
+      r_version = R.version.string
+    ),
+    preprocessing = data$preprocessing_stats,
+    model_performance = model_performance,
+    feature_importance = feature_selection$feature_importance,
+    feature_importance_stability = feature_selection$feature_importance_stability,
+    feature_boxplot_stats = feature_boxplot_stats,
+    calibration_curves = calibration_curves,
+    clustering = clustering,
+    permutation_testing = perm_testing,
+    permutation_distributions = list(
+      rf = list(auroc = permutation_results$null_aurocs$rf,
+                accuracy = permutation_results$null_accuracy$rf),
+      svm = list(auroc = permutation_results$null_aurocs$svm,
+                 accuracy = permutation_results$null_accuracy$svm),
+      xgboost = list(auroc = permutation_results$null_aurocs$xgboost,
+                     accuracy = permutation_results$null_accuracy$xgboost),
+      knn = list(auroc = permutation_results$null_aurocs$knn,
+                 accuracy = permutation_results$null_accuracy$knn),
+      mlp = list(auroc = permutation_results$null_aurocs$mlp,
+                 accuracy = permutation_results$null_accuracy$mlp),
+      soft_vote = list(auroc = permutation_results$null_aurocs$soft_vote,
+                       accuracy = permutation_results$null_accuracy$soft_vote)
+    ),
+    actual_distributions = list(),  # Empty as in original
+    profile_ranking = profile_ranking,
+    selected_features = feature_selection$selected_features
+  )
+  
+  return(output)
+}
+
+# =============================================================================
+# MAIN PIPELINE
+# =============================================================================
+
+run_pipeline <- function(config) {
+  start_time <- Sys.time()
+  
+  config <- get_effective_config(config)
+  set.seed(config$seed)
+  
+  if (!dir.exists(config$output_dir)) {
+    dir.create(config$output_dir, recursive = TRUE)
+  }
+  
+  log_message(paste(rep("=", 60), collapse = ""))
+  log_message("FULL DATASET TRAINING MODE")
+  log_message("WARNING: Training metrics only - validate externally!")
+  log_message(paste(rep("=", 60), collapse = ""))
+  
+  # Load data
+  data <- load_and_preprocess_data(config)
+  
+  # Feature selection
+  feature_selection <- perform_feature_selection(data$X_scaled, data$y, config)
+  X_selected_scaled <- data$X_scaled[, feature_selection$selected_features, drop = FALSE]
+  X_selected_raw    <- data$X_raw[, feature_selection$selected_features, drop = FALSE]
+  
+  # Train models
+  results <- train_all_models(
+    X_raw    = X_selected_raw,
+    X_scaled = X_selected_scaled,
+    y        = data$y,
+    config   = config
+  )
+  
+  # Permutation testing
+  permutation_results <- run_permutation_test(X_selected_raw, X_selected_scaled, data$y, config)
+  
+  # Calibration curves
+  calibration_curves <- compute_calibration_curves(results, data$y)
+  
+  # Dimensionality reduction
+  X_dr <- if (isTRUE(config$model_scaling$dr)) X_selected_scaled else X_selected_raw
+  
+  clustering <- list(
+    pca  = compute_pca_embedding(X_dr, data$y, data$sample_ids),
+    tsne = compute_tsne_embedding(X_dr, data$y, data$sample_ids),
+    umap = compute_umap_embedding(X_dr, data$y, data$sample_ids)
+  )
+  
+  # Profile ranking
+  profile_ranking <- rank_profiles(results, data$y, data$sample_ids)
+  
+  # Build JSON output
+  output <- build_json_output(data, results, feature_selection, permutation_results,
+                              calibration_curves, clustering, profile_ranking, config)
+  
+  # Export
+  output_path <- file.path(config$output_dir, config$output_json)
+  log_message(sprintf("Exporting to: %s", output_path))
+  json_output <- toJSON(output, auto_unbox = TRUE, pretty = TRUE, digits = 6, na = "null")
+  writeLines(json_output, output_path)
+  
+  # Save models
+  models <- lapply(results, function(r) r$model)
+  models_path <- file.path(config$output_dir, "trained_models.rds")
+  saveRDS(models, models_path)
+  log_message(sprintf("Models saved to: %s", models_path))
+  
+  end_time <- Sys.time()
+  log_message(sprintf("Completed in %.2f minutes",
+                      as.numeric(difftime(end_time, start_time, units = "mins"))))
+  
+  log_message(paste(rep("=", 60), collapse = ""))
+  log_message("IMPORTANT: These are TRAINING metrics - validate externally!")
+  log_message(paste(rep("=", 60), collapse = ""))
+  
+  return(invisible(output))
+}
+
+# =============================================================================
+# RUN
+# =============================================================================
+
+if (!interactive()) {
+  run_pipeline(config)
+}
