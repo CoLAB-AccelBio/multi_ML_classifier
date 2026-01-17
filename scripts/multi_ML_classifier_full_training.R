@@ -745,15 +745,24 @@ compute_umap_embedding <- function(X, y, sample_ids) {
 }
 
 # =============================================================================
-# PROFILE RANKING
+# PROFILE RANKING WITH CLASS-SPECIFIC RISK SCORES
 # =============================================================================
 
 rank_profiles <- function(results, y, sample_ids) {
-  log_message("Ranking sample profiles...")
+  log_message("Ranking sample profiles with class-specific risk scores...")
   
   ensemble_prob <- results$soft_vote$probabilities
   predicted_class <- as.character(results$soft_vote$predictions)
   actual_class <- as.character(y)
+  
+  # Get class levels
+  class_levels <- levels(y)
+  pos_class <- class_levels[2]  # Usually "1"
+  neg_class <- class_levels[1]  # Usually "0"
+  
+  # Calculate risk scores for each class
+  risk_score_positive <- ensemble_prob * 100
+  risk_score_negative <- (1 - ensemble_prob) * 100
   
   # Calculate confidence and rank
   confidence <- abs(ensemble_prob - 0.5) * 2
@@ -762,13 +771,16 @@ rank_profiles <- function(results, y, sample_ids) {
   profiles <- lapply(1:length(ensemble_prob), function(i) {
     list(
       sample_index = i - 1,  # 0-indexed
+      sample_id = if (length(sample_ids) >= i) sample_ids[i] else paste0("Sample_", i),
       actual_class = actual_class[i],
       ensemble_probability = ensemble_prob[i],
       predicted_class = predicted_class[i],
       confidence = confidence[i],
       correct = predicted_class[i] == actual_class[i],
       rank = which(rank_order == i),
-      top_profile = which(rank_order == i) <= 10
+      top_profile = which(rank_order == i) <= 10,
+      risk_score_class_0 = round(risk_score_negative[i], 2),
+      risk_score_class_1 = round(risk_score_positive[i], 2)
     )
   })
   
