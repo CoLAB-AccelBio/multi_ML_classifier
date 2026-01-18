@@ -98,7 +98,7 @@ export function DataPreprocessingTab({ data }: DataPreprocessingTabProps) {
               <Badge variant="outline" className="ml-2">From R Script</Badge>
             </CardTitle>
           </CardHeader>
-          <CardContent>
+          <CardContent className="space-y-6">
             <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
               <div className="bg-muted/30 rounded-lg p-4 text-center">
                 <div className="flex items-center justify-center gap-2 mb-2">
@@ -157,6 +157,127 @@ export function DataPreprocessingTab({ data }: DataPreprocessingTabProps) {
                 <p className="text-2xl font-bold">{classImbalanceRatio || "N/A"}</p>
               </div>
             </div>
+
+            {/* Train/Test Split Summary Card */}
+            {!preprocessing.full_training_mode && preprocessing.cv_folds && (
+              <div className="bg-gradient-to-r from-primary/10 via-secondary/10 to-accent/10 rounded-xl p-6 border border-primary/20">
+                <h4 className="font-semibold flex items-center gap-2 mb-3">
+                  <GitBranch className="w-4 h-4 text-primary" />
+                  Training vs Testing Data Split Summary
+                </h4>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                  <div className="bg-primary/20 rounded-lg p-4 text-center">
+                    <p className="text-xs text-muted-foreground mb-1">Training Data</p>
+                    <p className="text-3xl font-bold text-primary">
+                      {(((preprocessing.cv_folds - 1) / preprocessing.cv_folds) * 100).toFixed(0)}%
+                    </p>
+                    <p className="text-sm text-muted-foreground">
+                      ~{preprocessing.train_samples_per_fold || Math.floor(preprocessing.original_samples * (preprocessing.cv_folds - 1) / preprocessing.cv_folds)} samples/fold
+                    </p>
+                  </div>
+                  <div className="bg-secondary/20 rounded-lg p-4 text-center">
+                    <p className="text-xs text-muted-foreground mb-1">Testing Data</p>
+                    <p className="text-3xl font-bold text-secondary">
+                      {((1 / preprocessing.cv_folds) * 100).toFixed(0)}%
+                    </p>
+                    <p className="text-sm text-muted-foreground">
+                      ~{preprocessing.test_samples_per_fold || Math.ceil(preprocessing.original_samples / preprocessing.cv_folds)} samples/fold
+                    </p>
+                  </div>
+                  <div className="bg-accent/20 rounded-lg p-4 text-center">
+                    <p className="text-xs text-muted-foreground mb-1">Total CV Iterations</p>
+                    <p className="text-3xl font-bold text-accent">
+                      {preprocessing.cv_folds * (preprocessing.cv_repeats || 1)}
+                    </p>
+                    <p className="text-sm text-muted-foreground">
+                      {preprocessing.cv_folds} folds × {preprocessing.cv_repeats || 1} repeats
+                    </p>
+                  </div>
+                  <div className="bg-info/20 rounded-lg p-4 text-center">
+                    <p className="text-xs text-muted-foreground mb-1">Validation Ratio</p>
+                    <p className="text-3xl font-bold text-info">
+                      {(preprocessing.cv_folds - 1)}:1
+                    </p>
+                    <p className="text-sm text-muted-foreground">
+                      Train : Test per fold
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Train/Test Split Information */}
+            {preprocessing.full_training_mode ? (
+              <div className="bg-warning/10 border border-warning/30 rounded-lg p-4">
+                <h4 className="font-semibold text-warning flex items-center gap-2 mb-2">
+                  <AlertTriangle className="w-4 h-4" />
+                  Full Training Mode
+                </h4>
+                <p className="text-sm text-muted-foreground">
+                  All {preprocessing.original_samples} samples were used for training (100% training set). 
+                  No holdout test set was created. <strong>External validation is required</strong> to assess true model performance.
+                </p>
+                <div className="mt-3 grid grid-cols-2 gap-4">
+                  <div className="bg-primary/10 rounded-lg p-3 text-center">
+                    <p className="text-xs text-muted-foreground">Training Samples</p>
+                    <p className="text-xl font-bold text-primary">{preprocessing.original_samples}</p>
+                    <p className="text-xs text-muted-foreground">(100%)</p>
+                  </div>
+                  <div className="bg-muted/30 rounded-lg p-3 text-center">
+                    <p className="text-xs text-muted-foreground">Test Samples</p>
+                    <p className="text-xl font-bold text-muted-foreground">0</p>
+                    <p className="text-xs text-muted-foreground">(External validation needed)</p>
+                  </div>
+                </div>
+              </div>
+            ) : preprocessing.cv_folds ? (
+              <div className="bg-accent/10 border border-accent/30 rounded-lg p-4">
+                <h4 className="font-semibold text-accent flex items-center gap-2 mb-2">
+                  <GitBranch className="w-4 h-4" />
+                  Cross-Validation Split ({preprocessing.cv_folds}-Fold × {preprocessing.cv_repeats || 1} Repeats)
+                </h4>
+                <p className="text-sm text-muted-foreground mb-3">
+                  Data is split into {preprocessing.cv_folds} folds for cross-validation. 
+                  Each fold serves as a test set once while the remaining folds form the training set.
+                </p>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                  <div className="bg-primary/10 rounded-lg p-3 text-center">
+                    <p className="text-xs text-muted-foreground">Training per Fold</p>
+                    <p className="text-xl font-bold text-primary">{preprocessing.train_samples_per_fold || Math.floor(preprocessing.original_samples * (preprocessing.cv_folds - 1) / preprocessing.cv_folds)}</p>
+                    <p className="text-xs text-muted-foreground">
+                      (~{(((preprocessing.cv_folds - 1) / preprocessing.cv_folds) * 100).toFixed(0)}%)
+                    </p>
+                  </div>
+                  <div className="bg-secondary/10 rounded-lg p-3 text-center">
+                    <p className="text-xs text-muted-foreground">Testing per Fold</p>
+                    <p className="text-xl font-bold text-secondary">{preprocessing.test_samples_per_fold || Math.ceil(preprocessing.original_samples / preprocessing.cv_folds)}</p>
+                    <p className="text-xs text-muted-foreground">
+                      (~{((1 / preprocessing.cv_folds) * 100).toFixed(0)}%)
+                    </p>
+                  </div>
+                  {preprocessing.train_class_distribution && (
+                    <div className="bg-muted/30 rounded-lg p-3 text-center">
+                      <p className="text-xs text-muted-foreground">Train Class Dist.</p>
+                      <p className="text-sm font-mono">
+                        {Object.entries(preprocessing.train_class_distribution).map(([cls, count]) => 
+                          `${cls}:${count}`
+                        ).join(' / ')}
+                      </p>
+                    </div>
+                  )}
+                  {preprocessing.test_class_distribution && (
+                    <div className="bg-muted/30 rounded-lg p-3 text-center">
+                      <p className="text-xs text-muted-foreground">Test Class Dist.</p>
+                      <p className="text-sm font-mono">
+                        {Object.entries(preprocessing.test_class_distribution).map(([cls, count]) => 
+                          `${cls}:${count}`
+                        ).join(' / ')}
+                      </p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            ) : null}
           </CardContent>
         </Card>
       )}

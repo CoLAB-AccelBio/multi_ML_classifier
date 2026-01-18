@@ -21,7 +21,8 @@ import {
   Info,
   BoxSelect,
   Activity,
-  Filter
+  Filter,
+  Heart
 } from "lucide-react";
 import { MetricCard } from "./MetricCard";
 import { ModelComparisonChart } from "./ModelComparisonChart";
@@ -46,6 +47,8 @@ import { FeatureExpressionBoxplotTab } from "./FeatureExpressionBoxplotTab";
 import { PermutationDistributionTab } from "./PermutationDistributionTab";
 import { MLMethodInfoPanel } from "./MLMethodInfoPanel";
 import { FeatureSelectionVisualization } from "./FeatureSelectionVisualization";
+import { RiskScoreDistributionTab } from "./RiskScoreDistributionTab";
+import { SurvivalAnalysisTab } from "./SurvivalAnalysisTab";
 import type { MLResults } from "@/types/ml-results";
 
 interface DashboardProps {
@@ -232,6 +235,10 @@ export function Dashboard({ data, onReset }: DashboardProps) {
               <Users className="w-4 h-4 mr-2" />
               Rankings
             </TabsTrigger>
+            <TabsTrigger value="risk-scores" className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-md font-medium">
+              <Activity className="w-4 h-4 mr-2" />
+              Risk Scores
+            </TabsTrigger>
             <TabsTrigger value="prediction" className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-md font-medium">
               <Beaker className="w-4 h-4 mr-2" />
               Predict
@@ -259,6 +266,10 @@ export function Dashboard({ data, onReset }: DashboardProps) {
             <TabsTrigger value="cv-folds" className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-md font-medium">
               <GitBranch className="w-4 h-4 mr-2" />
               CV Folds
+            </TabsTrigger>
+            <TabsTrigger value="survival" className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-md font-medium">
+              <Heart className="w-4 h-4 mr-2" />
+              Survival
             </TabsTrigger>
             <TabsTrigger value="ml-info" className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-md font-medium">
               <Info className="w-4 h-4 mr-2" />
@@ -406,6 +417,19 @@ export function Dashboard({ data, onReset }: DashboardProps) {
             )}
           </TabsContent>
 
+          <TabsContent value="risk-scores">
+            {data.profile_ranking?.all_rankings ? (
+              <RiskScoreDistributionTab 
+                rankings={data.profile_ranking.all_rankings}
+              />
+            ) : (
+              <div className="bg-card rounded-xl p-12 border border-border text-center">
+                <Activity className="w-12 h-12 text-muted-foreground mx-auto mb-4" />
+                <p className="text-muted-foreground">No risk score data available. Run the R script with profile ranking enabled.</p>
+              </div>
+            )}
+          </TabsContent>
+
           <TabsContent value="perm-dist">
             <PermutationDistributionTab data={data} />
           </TabsContent>
@@ -436,6 +460,10 @@ export function Dashboard({ data, onReset }: DashboardProps) {
 
           <TabsContent value="cv-folds">
             <CVFoldVisualizationTab data={data} />
+          </TabsContent>
+
+          <TabsContent value="survival">
+            <SurvivalAnalysisTab data={data} />
           </TabsContent>
 
           <TabsContent value="ml-info">

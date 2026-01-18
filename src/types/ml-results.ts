@@ -136,6 +136,8 @@ export interface ProfileRanking {
   correct: boolean;
   rank: number;
   top_profile: boolean;
+  risk_score_class_0?: number;
+  risk_score_class_1?: number;
 }
 
 export interface FeatureBoxplotClassStats {
@@ -204,6 +206,15 @@ export interface PreprocessingStats {
   missing_pct: number;
   class_distribution: Record<string, number>;
   constant_features_removed: number;
+  // Train/Test split info (for CV mode)
+  cv_folds?: number;
+  cv_repeats?: number;
+  train_samples_per_fold?: number;
+  test_samples_per_fold?: number;
+  train_class_distribution?: Record<string, number>;
+  test_class_distribution?: Record<string, number>;
+  // Full training mode flag
+  full_training_mode?: boolean;
 }
 
 export interface MLResultsConfig {

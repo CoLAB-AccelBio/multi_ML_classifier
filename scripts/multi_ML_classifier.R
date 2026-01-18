@@ -44,6 +44,12 @@ suppressPackageStartupMessages({
   library(tidyr)
 })
 
+# Optional survival analysis libraries
+survival_available <- requireNamespace("survival", quietly = TRUE)
+survminer_available <- requireNamespace("survminer", quietly = TRUE)
+
+if (survival_available) library(survival)
+
 # =============================================================================
 # PARAMTERS
 # =============================================================================
@@ -107,7 +113,18 @@ option_list <- list(
   make_option(c("-p", "--n_permutations"),
               type = "integer",
               default = 100,
-              help = "Number of permutations [default: %default]")
+              help = "Number of permutations [default: %default]"),
+  
+  # Survival analysis options
+  make_option(c("--time"),
+              type = "character",
+              default = NULL,
+              help = "Time-to-event column name for survival analysis"),
+  
+  make_option(c("--event"),
+              type = "character",
+              default = NULL,
+              help = "Event/censoring column name for survival analysis (1=event, 0=censored)")
 )
 
 opt <- parse_args(OptionParser(option_list = option_list))
@@ -178,6 +195,10 @@ config <- list(
   # Set to NULL for single dataset, or list of dataset configs for batch mode
   batch_datasets = NULL,  # Example: list(list(expr="data1.txt", annot="annot1.txt", name="Dataset1"), ...)
   
+  # Survival analysis (optional)
+  time_variable = NULL,   # Column name for time-to-event
+  event_variable = NULL,  # Column name for event status (1=event, 0=censored)
+  
   # Output
   output_dir = "./results",
   output_json = "ml_results.json"
@@ -194,6 +215,8 @@ if (!is.null(opt$seed)) config$seed <- opt$seed
 if (!is.null(opt$n_folds)) config$n_folds <- opt$n_folds
 if (!is.null(opt$n_repeats)) config$n_repeats <- opt$n_repeats
 if (!is.null(opt$n_permutations)) config$n_permutations <- opt$n_permutations
+if (!is.null(opt$time)) config$time_variable <- opt$time
+if (!is.null(opt$event)) config$event_variable <- opt$event
 
 
 # =============================================================================
@@ -469,13 +492,31 @@ load_data <- function(config) {
   }
   
   # Store preprocessing stats before modifications
+  # Calculate train/test split info based on config (will be updated later with actual config)
+  n_folds <- if (!is.null(config$n_folds)) config$n_folds else 5
+  n_repeats <- if (!is.null(config$n_repeats)) config$n_repeats else 3
+  test_per_fold <- ceiling(length(sample_ids) / n_folds)
+  train_per_fold <- length(sample_ids) - test_per_fold
+  
+  # Calculate approximate class distribution per fold (stratified)
+  class_table <- table(y)
+  train_class_dist <- as.list(round(class_table * (n_folds - 1) / n_folds))
+  test_class_dist <- as.list(ceiling(class_table / n_folds))
+  
   preprocessing_stats <- list(
     original_samples = length(sample_ids),
     original_features = ncol(X),
     missing_values = sum(is.na(X)),
     missing_pct = round(sum(is.na(X)) / (nrow(X) * ncol(X)) * 100, 2),
-    class_distribution = as.list(table(y)),
-    constant_features_removed = 0
+    class_distribution = as.list(class_table),
+    constant_features_removed = 0,
+    cv_folds = n_folds,
+    cv_repeats = n_repeats,
+    train_samples_per_fold = train_per_fold,
+    test_samples_per_fold = test_per_fold,
+    train_class_distribution = train_class_dist,
+    test_class_distribution = test_class_dist,
+    full_training_mode = FALSE
   )
   
   # Ensure X is numeric
@@ -619,9 +660,17 @@ forward_selection <- function(X, y, max_features, seed = 42) {
   return(selected)
 }
 
-backward_elimination <- function(X, y, min_features = 5, seed = 42) {
+backward_elimination <- function(X, y, max_features = 50, seed = 42) {
   set.seed(seed)
   log_message("Performing backward elimination...")
+  
+  # Cap initial features if too many
+  if (ncol(X) > max_features) {
+    log_message(sprintf("Pre-filtering to top %d features by variance for backward elimination", max_features))
+    feature_var <- apply(X, 2, var, na.rm = TRUE)
+    top_idx <- order(feature_var, decreasing = TRUE)[1:max_features]
+    X <- X[, top_idx, drop = FALSE]
+  }
   
   selected <- colnames(X)
   ctrl <- trainControl(method = "cv", number = 3)
@@ -629,6 +678,7 @@ backward_elimination <- function(X, y, min_features = 5, seed = 42) {
                  trControl = ctrl, ntree = 100, tuneLength = 1)
   best_accuracy <- max(model$results$Accuracy)
   
+  min_features <- 5
   while (length(selected) > min_features) {
     results <- sapply(selected, function(feat) {
       current_features <- setdiff(selected, feat)
@@ -706,12 +756,34 @@ stepwise_selection <- function(X, y, max_features, seed = 42) {
 }
 
 perform_feature_selection <- function(X, y, method, max_features, seed = 42) {
-  switch(method,
+  # Enforce max_features limit (default 50)
+  max_features <- min(max_features, 50)
+  log_message(sprintf("Feature selection: method=%s, max_features=%d", method, max_features))
+  
+  selected <- switch(method,
          "forward" = forward_selection(X, y, max_features, seed),
          "backward" = backward_elimination(X, y, max_features, seed),
          "stepwise" = stepwise_selection(X, y, max_features, seed),
-         "none" = colnames(X)
+         "none" = {
+           # For "none" method, select top features by variance (capped at max_features)
+           if (ncol(X) <= max_features) {
+             colnames(X)
+           } else {
+             log_message(sprintf("Capping features from %d to %d using variance ranking", ncol(X), max_features))
+             feature_var <- apply(X, 2, var, na.rm = TRUE)
+             top_idx <- order(feature_var, decreasing = TRUE)[1:max_features]
+             colnames(X)[top_idx]
+           }
+         }
   )
+  
+  # Final enforcement of max_features limit
+  if (length(selected) > max_features) {
+    log_message(sprintf("Trimming selected features from %d to %d", length(selected), max_features), "WARN")
+    selected <- selected[1:max_features]
+  }
+  
+  return(selected)
 }
 
 # =============================================================================
@@ -1356,38 +1428,81 @@ run_permutation_test <- function(X, y, config, selected_features = NULL) {
 }
 
 # =============================================================================
-# PROFILE RANKING
+# PROFILE RANKING WITH CLASS-SPECIFIC RISK SCORES
 # =============================================================================
 
 rank_profiles <- function(X, y, models, config, sample_ids = NULL) {
-  log_message("Ranking profiles by prediction confidence...")
+  log_message("Ranking profiles by prediction confidence with class-specific risk scores...")
   
   all_probs <- list()
+  all_probs_class0 <- list()  # Probability for class 0 (negative)
+  
+  # Get class levels
+  class_levels <- levels(y)
+  pos_class <- class_levels[2]  # Usually "1"
+  neg_class <- class_levels[1]  # Usually "0"
   
   if (!is.null(models$rf)) {
     prob_matrix <- tryCatch(predict(models$rf$model, X, type = "prob"), error = function(e) NULL)
-    all_probs$rf <- safe_get_prob(prob_matrix, "1", n = nrow(X))
+    if (!is.null(prob_matrix)) {
+      all_probs$rf <- safe_get_prob(prob_matrix, pos_class, n = nrow(X))
+      # Get class 0 probability
+      if (neg_class %in% colnames(prob_matrix)) {
+        all_probs_class0$rf <- prob_matrix[, neg_class]
+      } else {
+        all_probs_class0$rf <- 1 - all_probs$rf
+      }
+    }
   }
   
   if (!is.null(models$svm)) {
     svm_pred <- tryCatch(predict(models$svm$model, as.matrix(X), probability = TRUE), error = function(e) NULL)
     prob_matrix <- if (!is.null(svm_pred)) attr(svm_pred, "probabilities") else NULL
-    all_probs$svm <- safe_get_prob(prob_matrix, "1", n = nrow(X))
+    if (!is.null(prob_matrix)) {
+      all_probs$svm <- safe_get_prob(prob_matrix, pos_class, n = nrow(X))
+      if (neg_class %in% colnames(prob_matrix)) {
+        all_probs_class0$svm <- prob_matrix[, neg_class]
+      } else {
+        all_probs_class0$svm <- 1 - all_probs$svm
+      }
+    }
   }
   
   if (!is.null(models$xgboost)) {
     prob_vec <- tryCatch(predict(models$xgboost$model, as.matrix(X)), error = function(e) NULL)
     all_probs$xgboost <- safe_get_prob(prob_vec, n = nrow(X))
+    if (!is.null(all_probs$xgboost)) {
+      all_probs_class0$xgboost <- 1 - all_probs$xgboost
+    }
   }
   
   if (!is.null(models$mlp)) {
     prob_matrix <- tryCatch(predict(models$mlp$model, as.matrix(X)), error = function(e) NULL)
     all_probs$mlp <- safe_get_prob(prob_matrix, n = nrow(X))
+    if (!is.null(all_probs$mlp)) {
+      all_probs_class0$mlp <- 1 - all_probs$mlp
+    }
+  }
+  
+  if (!is.null(models$knn)) {
+    # For KNN we need to re-predict to get probabilities
+    knn_pred <- tryCatch({
+      knn(train = X, test = X, cl = y, k = config$knn_k, prob = TRUE)
+    }, error = function(e) NULL)
+    if (!is.null(knn_pred)) {
+      knn_prob <- attr(knn_pred, "prob")
+      # Adjust probability based on predicted class
+      knn_prob_pos <- ifelse(knn_pred == pos_class, knn_prob, 1 - knn_prob)
+      all_probs$knn <- knn_prob_pos
+      all_probs_class0$knn <- 1 - knn_prob_pos
+    }
   }
   
   # Keep only valid probability vectors with the expected length
   all_probs <- Filter(function(v) is.numeric(v) && length(v) == nrow(X), all_probs)
+  all_probs_class0 <- Filter(function(v) is.numeric(v) && length(v) == nrow(X), all_probs_class0)
   
+  # Calculate ensemble probability for positive class
   avg_prob <- if (length(all_probs) == 0) {
     log_message("No usable probability outputs for profile ranking; using neutral 0.5", "WARN")
     rep(0.5, nrow(X))
@@ -1395,16 +1510,36 @@ rank_profiles <- function(X, y, models, config, sample_ids = NULL) {
     as.numeric(rowMeans(do.call(cbind, all_probs), na.rm = TRUE))
   }
   
+  # Calculate ensemble probability for negative class
+  avg_prob_class0 <- if (length(all_probs_class0) == 0) {
+    1 - avg_prob
+  } else {
+    as.numeric(rowMeans(do.call(cbind, all_probs_class0), na.rm = TRUE))
+  }
+  
   confidence <- abs(avg_prob - 0.5) * 2
+  
+  # Create risk scores (scaled 0-100)
+  risk_score_positive <- avg_prob * 100
+  risk_score_negative <- avg_prob_class0 * 100
   
   ranking <- data.frame(
     sample_index = 1:nrow(X),
     actual_class = as.character(y),
     ensemble_probability = avg_prob,
-    predicted_class = ifelse(avg_prob > 0.5, "1", "0"),
+    predicted_class = ifelse(avg_prob > 0.5, pos_class, neg_class),
     confidence = confidence,
-    correct = as.character(y) == ifelse(avg_prob > 0.5, "1", "0")
+    correct = as.character(y) == ifelse(avg_prob > 0.5, pos_class, neg_class),
+    risk_score_class_0 = round(risk_score_negative, 2),
+    risk_score_class_1 = round(risk_score_positive, 2)
   )
+  
+  # Add sample_ids if provided
+  if (!is.null(sample_ids) && length(sample_ids) == nrow(X)) {
+    ranking$sample_id <- sample_ids
+  } else {
+    ranking$sample_id <- paste0("Sample_", 1:nrow(X))
+  }
   
   ranking <- ranking[order(-ranking$confidence), ]
   ranking$rank <- 1:nrow(ranking)
@@ -1751,6 +1886,222 @@ compute_feature_boxplot_stats <- function(unscaled_expr, y, top_features, top_n 
 }
 
 # =============================================================================
+# SURVIVAL ANALYSIS FUNCTIONS
+# =============================================================================
+
+#' Perform per-gene survival analysis using Kaplan-Meier and Cox PH models
+#' @param expr_data Expression matrix (rows=samples, cols=features)
+#' @param annotation Data frame with survival data
+#' @param time_col Name of time-to-event column
+#' @param event_col Name of event status column
+#' @param features Vector of feature names to analyze
+#' @return List with per-gene survival statistics
+perform_survival_analysis <- function(expr_data, annotation, time_col, event_col, features, sample_ids) {
+  if (!survival_available) {
+    log_message("Survival analysis skipped: 'survival' package not installed", "WARN")
+    return(NULL)
+  }
+  
+  log_message("Performing survival analysis...")
+  
+  # Validate columns exist
+  if (!time_col %in% colnames(annotation)) {
+    log_message(sprintf("Time variable '%s' not found in annotation. Available columns: %s", 
+                        time_col, paste(colnames(annotation), collapse = ", ")), "WARN")
+    return(NULL)
+  }
+  if (!event_col %in% colnames(annotation)) {
+    log_message(sprintf("Event variable '%s' not found in annotation. Available columns: %s", 
+                        event_col, paste(colnames(annotation), collapse = ", ")), "WARN")
+    return(NULL)
+  }
+  
+  log_message(sprintf("Time variable: '%s', Event variable: '%s'", time_col, event_col))
+  log_message(sprintf("Annotation has %d rows, expression has %d samples", nrow(annotation), nrow(expr_data)))
+  
+  # Extract survival data with robust numeric conversion (suppress coercion warnings)
+  surv_time <- suppressWarnings(as.numeric(as.character(annotation[[time_col]])))
+  surv_event <- suppressWarnings(as.numeric(as.character(annotation[[event_col]])))
+  
+  # Log conversion results
+  na_time_orig <- sum(is.na(annotation[[time_col]]))
+  na_event_orig <- sum(is.na(annotation[[event_col]]))
+  na_time_after <- sum(is.na(surv_time))
+  na_event_after <- sum(is.na(surv_event))
+  
+  log_message(sprintf("Time values: %d total, %d NA in original, %d NA after conversion", 
+                      length(surv_time), na_time_orig, na_time_after))
+  log_message(sprintf("Event values: %d total, %d NA in original, %d NA after conversion", 
+                      length(surv_event), na_event_orig, na_event_after))
+  
+  # Check for valid time values (must be positive)
+  positive_time <- sum(!is.na(surv_time) & surv_time > 0)
+  log_message(sprintf("Positive time values: %d", positive_time))
+  
+  # Remove samples with missing survival data
+  valid_idx <- !is.na(surv_time) & !is.na(surv_event) & surv_time > 0
+  log_message(sprintf("Valid samples for survival analysis: %d / %d", sum(valid_idx), length(valid_idx)))
+  
+  if (sum(valid_idx) < 10) {
+    log_message("Insufficient samples with valid survival data (< 10)", "WARN")
+    return(NULL)
+  }
+  
+  per_gene_results <- list()
+  features_to_analyze <- head(features, 50)  # Limit to top 50 features
+  
+  for (i in seq_along(features_to_analyze)) {
+    feat <- features_to_analyze[i]
+    if (i %% 10 == 1) show_progress(i, length(features_to_analyze), "Survival Analysis")
+    
+    if (!feat %in% colnames(expr_data)) next
+    
+    expr_values <- expr_data[[feat]][valid_idx]
+    time_vals <- surv_time[valid_idx]
+    event_vals <- surv_event[valid_idx]
+    
+    # Median split for Kaplan-Meier
+    median_expr <- median(expr_values, na.rm = TRUE)
+    high_group <- expr_values >= median_expr
+    
+    # Skip if one group is too small
+    if (sum(high_group) < 3 || sum(!high_group) < 3) next
+    
+    tryCatch({
+      # Create survival object
+      surv_obj <- Surv(time_vals, event_vals)
+      
+      # Log-rank test
+      surv_diff <- survdiff(surv_obj ~ high_group)
+      logrank_p <- 1 - pchisq(surv_diff$chisq, df = 1)
+      
+      # Cox proportional hazards
+      cox_fit <- coxph(surv_obj ~ expr_values)
+      cox_summary <- summary(cox_fit)
+      
+      cox_hr <- as.numeric(exp(cox_fit$coefficients))
+      cox_ci <- exp(confint(cox_fit))
+      cox_p <- cox_summary$coefficients[, "Pr(>|z|)"]
+      
+      # Kaplan-Meier fits for median survival
+      km_high <- survfit(surv_obj[high_group] ~ 1)
+      km_low <- survfit(surv_obj[!high_group] ~ 1)
+      
+      # Extract median survival times
+      high_median <- if (!is.na(summary(km_high)$table["median"])) summary(km_high)$table["median"] else NA
+      low_median <- if (!is.na(summary(km_low)$table["median"])) summary(km_low)$table["median"] else NA
+      
+      per_gene_results[[feat]] <- list(
+        gene = feat,
+        logrank_p = as.numeric(logrank_p),
+        cox_hr = as.numeric(cox_hr),
+        cox_hr_lower = as.numeric(cox_ci[1]),
+        cox_hr_upper = as.numeric(cox_ci[2]),
+        cox_p = as.numeric(cox_p),
+        high_median_surv = as.numeric(high_median),
+        low_median_surv = as.numeric(low_median)
+      )
+    }, error = function(e) {
+      log_message(sprintf("Survival analysis failed for %s: %s", feat, e$message), "WARN")
+    })
+  }
+  
+  show_progress(length(features_to_analyze), length(features_to_analyze), "Survival Analysis")
+  
+  log_message(sprintf("Survival analysis completed for %d features", length(per_gene_results)))
+  
+  return(list(
+    time_variable = time_col,
+    event_variable = event_col,
+    per_gene = do.call(rbind, lapply(per_gene_results, function(x) {
+      data.frame(x, stringsAsFactors = FALSE)
+    }))
+  ))
+}
+
+#' Perform survival analysis based on model risk scores
+#' @param risk_scores Data frame with sample IDs and risk scores per model
+#' @param annotation Annotation data frame
+#' @param time_col Time-to-event column name
+#' @param event_col Event status column name
+#' @return List with model-specific survival results
+perform_model_risk_survival <- function(rankings, annotation, time_col, event_col, sample_ids) {
+  if (!survival_available) return(NULL)
+  if (is.null(rankings) || nrow(rankings) == 0) return(NULL)
+  
+  log_message("Performing model risk score survival analysis...")
+  
+  # Get survival data
+  surv_time <- as.numeric(annotation[[time_col]])
+  surv_event <- as.numeric(annotation[[event_col]])
+  
+  # Use ensemble probability as risk score
+  if (!"ensemble_probability" %in% colnames(rankings)) return(NULL)
+  
+  risk_scores <- rankings$ensemble_probability
+  
+  # Align with annotation
+  valid_idx <- !is.na(surv_time) & !is.na(surv_event) & surv_time > 0
+  if (sum(valid_idx) < 10) return(NULL)
+  
+  tryCatch({
+    time_vals <- surv_time[valid_idx]
+    event_vals <- surv_event[valid_idx]
+    risk_vals <- risk_scores[valid_idx]
+    
+    # Median split
+    high_risk <- risk_vals >= median(risk_vals, na.rm = TRUE)
+    
+    if (sum(high_risk) < 3 || sum(!high_risk) < 3) return(NULL)
+    
+    surv_obj <- Surv(time_vals, event_vals)
+    
+    # Log-rank test
+    surv_diff <- survdiff(surv_obj ~ high_risk)
+    logrank_p <- 1 - pchisq(surv_diff$chisq, df = 1)
+    
+    # Cox model
+    cox_fit <- coxph(surv_obj ~ risk_vals)
+    cox_summary <- summary(cox_fit)
+    cox_hr <- as.numeric(exp(cox_fit$coefficients))
+    cox_ci <- exp(confint(cox_fit))
+    cox_p <- cox_summary$coefficients[, "Pr(>|z|)"]
+    
+    # K-M curves for export
+    km_high <- survfit(surv_obj[high_risk] ~ 1)
+    km_low <- survfit(surv_obj[!high_risk] ~ 1)
+    
+    format_km_curve <- function(km_fit) {
+      data.frame(
+        time = km_fit$time,
+        surv = km_fit$surv,
+        lower = km_fit$lower,
+        upper = km_fit$upper,
+        n_risk = km_fit$n.risk,
+        n_event = km_fit$n.event,
+        n_censor = km_fit$n.censor
+      )
+    }
+    
+    list(
+      model = "ensemble",
+      stats = list(
+        logrank_p = as.numeric(logrank_p),
+        cox_hr = as.numeric(cox_hr),
+        cox_hr_lower = as.numeric(cox_ci[1]),
+        cox_hr_upper = as.numeric(cox_ci[2]),
+        cox_p = as.numeric(cox_p)
+      ),
+      km_curve_high = format_km_curve(km_high),
+      km_curve_low = format_km_curve(km_low)
+    )
+  }, error = function(e) {
+    log_message(sprintf("Model risk survival failed: %s", e$message), "WARN")
+    return(NULL)
+  })
+}
+
+# =============================================================================
 # JSON EXPORT
 # =============================================================================
 
@@ -1800,7 +2151,8 @@ export_to_json <- function(results, config, output_path) {
       list(top_profiles = results$ranking[results$ranking$top_profile, ],
            all_rankings = results$ranking)
     } else NULL,
-    selected_features = results$selected_features
+    selected_features = results$selected_features,
+    survival_analysis = results$survival_analysis
   )
   
   json_output <- toJSON(output, auto_unbox = TRUE, pretty = TRUE, digits = 6)
@@ -2018,6 +2370,20 @@ run_pipeline <- function(config) {
   
   output_path <- file.path(config$output_dir, config$output_json)
   export_to_json(results, config, output_path)
+  
+  # Save models with proper XGBoost serialization
+  # XGBoost models need special serialization - convert to raw bytes
+  if (!is.null(final_models$xgboost) && inherits(final_models$xgboost, "xgb.Booster")) {
+    log_message("Serializing XGBoost model using xgb.save.raw()...")
+    final_models$xgboost_raw <- xgb.save.raw(final_models$xgboost)
+    final_models$xgboost <- NULL  # Remove the pointer-based object
+    final_models$xgboost_serialized <- TRUE
+  }
+  
+  models_path <- file.path(config$output_dir, "trained_models.rds")
+  saveRDS(final_models, models_path)
+  log_message(sprintf("Models saved to: %s", models_path))
+  log_message("NOTE: To load XGBoost model, use: models$xgboost <- xgb.load.raw(models$xgboost_raw)")
   
   end_time <- Sys.time()
   log_message(sprintf("Pipeline completed in %.2f minutes",
