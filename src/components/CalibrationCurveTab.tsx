@@ -21,31 +21,46 @@ interface CalibrationPoint {
 export function CalibrationCurveTab({ data }: CalibrationCurveTabProps) {
   const hasExported = !!data.calibration_curves && Object.keys(data.calibration_curves).length > 0;
 
+  // Helper to normalize calibration data (could be array or object from R)
+  const normalizeCalibrationArray = (val: unknown): any[] => {
+    if (!val) return [];
+    if (Array.isArray(val)) return val;
+    if (typeof val === 'object') return Object.values(val);
+    return [];
+  };
+
   const calibrationData: CalibrationPoint[] = (() => {
     if (hasExported) {
       // Normalize exported calibration curves into the chart shape.
-      const keys = ["rf", "svm", "xgboost", "knn", "mlp", "soft_vote"] as const;
       const byModel = data.calibration_curves!;
 
       // Build a union of bins based on soft_vote (preferred) or first available model
-      const base = byModel.soft_vote ?? byModel.rf ?? Object.values(byModel)[0] ?? [];
+      const rawBase = byModel.soft_vote ?? byModel.rf ?? Object.values(byModel)[0] ?? [];
+      const base = normalizeCalibrationArray(rawBase);
+
+      if (base.length === 0) {
+        return [];
+      }
 
       return base.map((p) => {
         const getPct = (k: string) => {
-          const arr = (byModel as Record<string, any[]>)[k] ?? [];
+          const rawArr = (byModel as Record<string, unknown>)[k];
+          const arr = normalizeCalibrationArray(rawArr);
           const match = arr.find((x) => x.bin === (p as any).bin);
           return match ? Number(match.frac_pos_pct) : null;
         };
 
+        const meanPredPct = typeof p?.mean_pred_pct === 'number' ? p.mean_pred_pct : 0;
+
         return {
-          binCenter: Number(p.mean_pred_pct.toFixed(1)),
+          binCenter: Number(meanPredPct.toFixed(1)),
           rf: getPct("rf"),
           svm: getPct("svm"),
           xgboost: getPct("xgboost"),
           knn: getPct("knn"),
           mlp: getPct("mlp"),
           ensemble: getPct("soft_vote"),
-          perfect: Number(p.mean_pred_pct.toFixed(1)),
+          perfect: Number(meanPredPct.toFixed(1)),
         };
       });
     }
