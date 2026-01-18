@@ -11,6 +11,7 @@ import {
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Download, FileText, Loader2, Heart } from "lucide-react";
+import { useToast } from "@/hooks/use-toast";
 import type { MLResults, PerGeneSurvival, ModelRiskScoreSurvival } from "@/types/ml-results";
 
 interface SurvivalReportExportProps {
@@ -92,6 +93,7 @@ function normalizeModelRiskScores(raw: unknown): ModelRiskScoreSurvival[] {
 export function SurvivalReportExport({ data }: SurvivalReportExportProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
+  const { toast } = useToast();
   const [sections, setSections] = useState<ReportSections>({
     overview: true,
     kmCurves: true,
@@ -386,6 +388,11 @@ export function SurvivalReportExport({ data }: SurvivalReportExportProps) {
         a.click();
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
+
+        toast({
+          title: "Report Downloaded",
+          description: "Your survival analysis report has been downloaded successfully.",
+        });
       } else {
         const printWindow = window.open("", "_blank");
         if (printWindow) {
@@ -395,12 +402,22 @@ export function SurvivalReportExport({ data }: SurvivalReportExportProps) {
           setTimeout(() => {
             printWindow.print();
           }, 500);
+
+          toast({
+            title: "Print Dialog Opened",
+            description: "Use the print dialog to save as PDF.",
+          });
         }
       }
 
       setIsOpen(false);
     } catch (error) {
       console.error("Error generating survival report:", error);
+      toast({
+        title: "Export Failed",
+        description: "There was an error generating your report. Please try again.",
+        variant: "destructive",
+      });
     } finally {
       setIsGenerating(false);
     }
@@ -447,7 +464,18 @@ export function SurvivalReportExport({ data }: SurvivalReportExportProps) {
           ))}
         </div>
 
-        <div className="flex gap-2">
+        {isGenerating && (
+          <div className="flex flex-col items-center justify-center py-6 space-y-3">
+            <div className="relative">
+              <div className="w-12 h-12 border-4 border-muted rounded-full animate-spin border-t-primary" />
+            </div>
+            <p className="text-sm text-muted-foreground animate-pulse">
+              Generating report... This may take a moment.
+            </p>
+          </div>
+        )}
+
+        <div className={`flex gap-2 ${isGenerating ? 'opacity-50 pointer-events-none' : ''}`}>
           <Button
             onClick={() => handleExport("html")}
             disabled={isGenerating}

@@ -12,6 +12,7 @@ import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Download, FileText, Loader2, User, Search } from "lucide-react";
+import { useToast } from "@/hooks/use-toast";
 import type { MLResults, ProfileRanking, PerGeneSurvival, ModelRiskScoreSurvival } from "@/types/ml-results";
 
 interface ClinicalReportExportProps {
@@ -68,6 +69,7 @@ function normalizeModelRiskScores(raw: unknown): ModelRiskScoreSurvival[] {
 export function ClinicalReportExport({ data }: ClinicalReportExportProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
+  const { toast } = useToast();
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedPatients, setSelectedPatients] = useState<string[]>([]);
 
@@ -431,6 +433,11 @@ export function ClinicalReportExport({ data }: ClinicalReportExportProps) {
         a.click();
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
+
+        toast({
+          title: "Report Downloaded",
+          description: `Clinical report for ${selectedPatients.length} patient(s) downloaded successfully.`,
+        });
       } else {
         const printWindow = window.open("", "_blank");
         if (printWindow) {
@@ -440,12 +447,22 @@ export function ClinicalReportExport({ data }: ClinicalReportExportProps) {
           setTimeout(() => {
             printWindow.print();
           }, 500);
+
+          toast({
+            title: "Print Dialog Opened",
+            description: "Use the print dialog to save as PDF.",
+          });
         }
       }
 
       setIsOpen(false);
     } catch (error) {
       console.error("Error generating clinical report:", error);
+      toast({
+        title: "Export Failed",
+        description: "There was an error generating your report. Please try again.",
+        variant: "destructive",
+      });
     } finally {
       setIsGenerating(false);
     }
@@ -527,7 +544,18 @@ export function ClinicalReportExport({ data }: ClinicalReportExportProps) {
           </ScrollArea>
         </div>
 
-        <div className="flex gap-2">
+        {isGenerating && (
+          <div className="flex flex-col items-center justify-center py-6 space-y-3">
+            <div className="relative">
+              <div className="w-12 h-12 border-4 border-muted rounded-full animate-spin border-t-primary" />
+            </div>
+            <p className="text-sm text-muted-foreground animate-pulse">
+              Generating report for {selectedPatients.length} patient(s)... This may take a moment.
+            </p>
+          </div>
+        )}
+
+        <div className={`flex gap-2 ${isGenerating ? 'opacity-50 pointer-events-none' : ''}`}>
           <Button
             onClick={() => handleExport("html")}
             disabled={isGenerating || selectedPatients.length === 0}
