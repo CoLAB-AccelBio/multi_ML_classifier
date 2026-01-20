@@ -17,19 +17,20 @@ const Index = () => {
   const [data, setData] = useState<MLResults | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>("landing");
   const [comparisonFiles, setComparisonFiles] = useState<{ name: string; data: MLResults }[]>([]);
+  const [comparisonStarted, setComparisonStarted] = useState(false);
 
   if (viewMode === "single" && data) {
     return <Dashboard data={data} onReset={() => { setData(null); setViewMode("landing"); }} />;
   }
 
-  if (viewMode === "comparison" && comparisonFiles.length >= 2) {
+  if (viewMode === "comparison" && comparisonStarted && comparisonFiles.length >= 2) {
     return (
       <div className="min-h-screen bg-background">
         <header className="sticky top-0 z-50 bg-background/70 backdrop-blur-lg border-b border-border">
           <div className="container mx-auto px-4 py-4">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-4">
-                <Button variant="ghost" size="sm" onClick={() => { setComparisonFiles([]); setViewMode("landing"); }}>
+                <Button variant="ghost" size="sm" onClick={() => { setComparisonFiles([]); setComparisonStarted(false); setViewMode("landing"); }}>
                   ← Back
                 </Button>
                 <div className="flex items-center gap-3">
@@ -110,9 +111,19 @@ const Index = () => {
               <p className="text-muted-foreground">Upload 2-4 JSON result files to compare side-by-side</p>
             </div>
             <ComparisonUploader onFilesLoaded={setComparisonFiles} currentFiles={comparisonFiles} />
-            {comparisonFiles.length < 2 && (
-              <Button variant="ghost" className="w-full mt-4" onClick={() => setViewMode("landing")}>Cancel comparison</Button>
-            )}
+            <div className="flex gap-3 mt-4">
+              <Button variant="ghost" className="flex-1" onClick={() => { setComparisonFiles([]); setViewMode("landing"); }}>
+                Cancel
+              </Button>
+              <Button 
+                className="flex-1 gap-2" 
+                disabled={comparisonFiles.length < 2}
+                onClick={() => setComparisonStarted(true)}
+              >
+                <Play className="w-4 h-4" />
+                Start Comparison ({comparisonFiles.length} files)
+              </Button>
+            </div>
           </div>
         ) : (
           <div className="max-w-2xl mx-auto mb-16">
