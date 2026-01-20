@@ -4,6 +4,16 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { MLResults } from "@/types/ml-results";
 
+const MAX_FILES = 4;
+
+const RUN_LABELS = ["Run A", "Run B", "Run C", "Run D"];
+const RUN_COLORS = [
+  { bg: "bg-primary/10", border: "border-primary/30", text: "text-primary", badge: "bg-primary/20" },
+  { bg: "bg-secondary/10", border: "border-secondary/30", text: "text-secondary", badge: "bg-secondary/20" },
+  { bg: "bg-accent/10", border: "border-accent/30", text: "text-accent", badge: "bg-accent/20" },
+  { bg: "bg-warning/10", border: "border-warning/30", text: "text-warning", badge: "bg-warning/20" },
+];
+
 interface ComparisonUploaderProps {
   onFilesLoaded: (files: { name: string; data: MLResults }[]) => void;
   currentFiles: { name: string; data: MLResults }[];
@@ -28,8 +38,8 @@ export function ComparisonUploader({ onFilesLoaded, currentFiles }: ComparisonUp
         return;
       }
 
-      if (currentFiles.length >= 2) {
-        setError("Maximum 2 files for comparison");
+      if (currentFiles.length >= MAX_FILES) {
+        setError(`Maximum ${MAX_FILES} files for comparison`);
         return;
       }
 
@@ -68,7 +78,6 @@ export function ComparisonUploader({ onFilesLoaded, currentFiles }: ComparisonUp
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
       if (file) void handleFile(file);
-      // Allow re-selecting the same file
       e.target.value = "";
     },
     [handleFile]
@@ -78,42 +87,54 @@ export function ComparisonUploader({ onFilesLoaded, currentFiles }: ComparisonUp
     onFilesLoaded(currentFiles.filter((f) => f.name !== name));
   };
 
+  const getUploadMessage = () => {
+    if (isLoading) return "Parsing file…";
+    if (currentFiles.length === 0) return "Upload first analysis file";
+    if (currentFiles.length === 1) return "Add second file for comparison";
+    return `Add file ${currentFiles.length + 1} (optional, max ${MAX_FILES})`;
+  };
+
   return (
     <div className="space-y-4">
       {/* Current files */}
       {currentFiles.length > 0 && (
         <div className="flex flex-wrap gap-2">
-          {currentFiles.map((file, index) => (
-            <div
-              key={file.name}
-              className={cn(
-                "flex items-center gap-2 px-3 py-2 rounded-lg border",
-                index === 0 ? "bg-primary/10 border-primary/30" : "bg-secondary/10 border-secondary/30"
-              )}
-            >
-              <FileJson className={cn("w-4 h-4", index === 0 ? "text-primary" : "text-secondary")} />
-              <span className="text-sm font-medium truncate max-w-[200px]">{file.name}</span>
-              <span
+          {currentFiles.map((file, index) => {
+            const colors = RUN_COLORS[index];
+            return (
+              <div
+                key={file.name}
                 className={cn(
-                  "text-xs px-2 py-0.5 rounded-full",
-                  index === 0 ? "bg-primary/20 text-primary" : "bg-secondary/20 text-secondary"
+                  "flex items-center gap-2 px-3 py-2 rounded-lg border",
+                  colors.bg,
+                  colors.border
                 )}
               >
-                {index === 0 ? "Run A" : "Run B"}
-              </span>
-              <button
-                onClick={() => removeFile(file.name)}
-                className="p-1 hover:bg-muted rounded-full transition-colors"
-              >
-                <X className="w-3 h-3" />
-              </button>
-            </div>
-          ))}
+                <FileJson className={cn("w-4 h-4", colors.text)} />
+                <span className="text-sm font-medium truncate max-w-[200px]">{file.name}</span>
+                <span
+                  className={cn(
+                    "text-xs px-2 py-0.5 rounded-full",
+                    colors.badge,
+                    colors.text
+                  )}
+                >
+                  {RUN_LABELS[index]}
+                </span>
+                <button
+                  onClick={() => removeFile(file.name)}
+                  className="p-1 hover:bg-muted rounded-full transition-colors"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              </div>
+            );
+          })}
         </div>
       )}
 
       {/* Upload area */}
-      {currentFiles.length < 2 && (
+      {currentFiles.length < MAX_FILES && (
         <div
           className={cn(
             "relative border-2 border-dashed rounded-xl p-6 transition-all duration-300",
@@ -146,13 +167,7 @@ export function ComparisonUploader({ onFilesLoaded, currentFiles }: ComparisonUp
               )}
             </div>
             <div className="text-center">
-              <p className="text-sm font-medium">
-                {isLoading
-                  ? "Parsing file…"
-                  : currentFiles.length === 0
-                    ? "Upload first analysis file"
-                    : "Add second file for comparison"}
-              </p>
+              <p className="text-sm font-medium">{getUploadMessage()}</p>
               <p className="text-xs text-muted-foreground">
                 {isLoading ? "Please wait" : "Drop JSON or click to browse"}
               </p>
@@ -163,10 +178,17 @@ export function ComparisonUploader({ onFilesLoaded, currentFiles }: ComparisonUp
 
       {error && <p className="text-sm text-destructive">{error}</p>}
 
-      {currentFiles.length === 2 && (
-        <Button variant="outline" size="sm" onClick={() => onFilesLoaded([])} className="w-full">
-          Clear and start new comparison
-        </Button>
+      {currentFiles.length >= 2 && (
+        <div className="flex gap-2">
+          <Button variant="outline" size="sm" onClick={() => onFilesLoaded([])} className="flex-1">
+            Clear all files
+          </Button>
+          {currentFiles.length < MAX_FILES && (
+            <p className="text-xs text-muted-foreground self-center">
+              {MAX_FILES - currentFiles.length} more file(s) can be added
+            </p>
+          )}
+        </div>
       )}
     </div>
   );
