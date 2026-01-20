@@ -22,7 +22,7 @@ const Index = () => {
     return <Dashboard data={data} onReset={() => { setData(null); setViewMode("landing"); }} />;
   }
 
-  if (viewMode === "comparison" && comparisonFiles.length === 2) {
+  if (viewMode === "comparison" && comparisonFiles.length >= 2) {
     return (
       <div className="min-h-screen bg-background">
         <header className="sticky top-0 z-50 bg-background/70 backdrop-blur-lg border-b border-border">
@@ -36,7 +36,7 @@ const Index = () => {
                   <img src={accelBioLogo} alt="Co-Lab AccelBio logo" className="h-9 w-auto" />
                   <div>
                     <h1 className="text-xl font-bold gradient-text">Side-by-Side Comparison</h1>
-                    <p className="text-sm text-muted-foreground">Comparing two analysis runs</p>
+                    <p className="text-sm text-muted-foreground">Comparing {comparisonFiles.length} analysis runs</p>
                   </div>
                 </div>
               </div>
@@ -45,7 +45,7 @@ const Index = () => {
           </div>
         </header>
         <main className="container mx-auto px-4 py-8">
-          <ComparisonDashboard runA={comparisonFiles[0]} runB={comparisonFiles[1]} />
+          <ComparisonDashboard runs={comparisonFiles} />
         </main>
       </div>
     );
@@ -107,7 +107,7 @@ const Index = () => {
           <div className="max-w-2xl mx-auto mb-16">
             <div className="text-center mb-6">
               <h2 className="text-2xl font-semibold mb-2">Compare Analysis Runs</h2>
-              <p className="text-muted-foreground">Upload two JSON result files to compare side-by-side</p>
+              <p className="text-muted-foreground">Upload 2-4 JSON result files to compare side-by-side</p>
             </div>
             <ComparisonUploader onFilesLoaded={setComparisonFiles} currentFiles={comparisonFiles} />
             {comparisonFiles.length < 2 && (
