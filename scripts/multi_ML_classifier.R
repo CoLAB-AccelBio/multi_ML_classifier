@@ -201,7 +201,7 @@ config <- list(
   
   # Output
   output_dir = "./results",
-  output_json = "ml_results.json"
+  output_json = NULL  # Will be auto-generated from annotation file if not specified
 )
 
 # Override config from command-line arguments if provided
@@ -217,6 +217,13 @@ if (!is.null(opt$n_repeats)) config$n_repeats <- opt$n_repeats
 if (!is.null(opt$n_permutations)) config$n_permutations <- opt$n_permutations
 if (!is.null(opt$time)) config$time_variable <- opt$time
 if (!is.null(opt$event)) config$event_variable <- opt$event
+
+# Auto-generate output JSON filename from annotation file if not specified
+if (is.null(config$output_json)) {
+  annot_basename <- basename(config$annotation_file)
+  annot_name <- sub("\\.[^.]+$", "", annot_basename)  # Remove extension
+  config$output_json <- paste0("ml_results_", annot_name, ".json")
+}
 
 
 # =============================================================================
