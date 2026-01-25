@@ -11,10 +11,126 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Search, FileText, Download, Dna } from "lucide-react";
+import { Search, FileText, Download, Dna, ExternalLink } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "@/hooks/use-toast";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import type { MLResults } from "@/types/ml-results";
+
+// Gene annotation database links configuration - grouped by category
+const geneDbCategories = [
+  {
+    name: "General",
+    color: "text-blue-600",
+    databases: [
+      { id: "gc", label: "GC", name: "GeneCards", color: "text-blue-500 hover:text-blue-600", 
+        url: (gene: string) => `https://www.genecards.org/cgi-bin/carddisp.pl?gene=${encodeURIComponent(gene)}` },
+      { id: "ncbi", label: "N", name: "NCBI Gene", color: "text-green-600 hover:text-green-700", 
+        url: (gene: string) => `https://www.ncbi.nlm.nih.gov/gene/?term=${encodeURIComponent(gene)}` },
+      { id: "ensembl", label: "E", name: "Ensembl", color: "text-red-500 hover:text-red-600", 
+        url: (gene: string) => `https://www.ensembl.org/Human/Search/Results?q=${encodeURIComponent(gene)}` },
+      { id: "uniprot", label: "U", name: "UniProt", color: "text-amber-600 hover:text-amber-700", 
+        url: (gene: string) => `https://www.uniprot.org/uniprotkb?query=${encodeURIComponent(gene)}` },
+      { id: "hpa", label: "PA", name: "Human Protein Atlas", color: "text-indigo-500 hover:text-indigo-600", 
+        url: (gene: string) => `https://www.proteinatlas.org/search/${encodeURIComponent(gene)}` },
+    ],
+  },
+  {
+    name: "Cancer",
+    color: "text-rose-600",
+    databases: [
+      { id: "civic", label: "Cv", name: "CIViC", color: "text-teal-500 hover:text-teal-600", 
+        url: (gene: string) => `https://civicdb.org/entities/genes?name=${encodeURIComponent(gene)}` },
+      { id: "vicc", label: "CV", name: "Cancer Variants", color: "text-rose-500 hover:text-rose-600", 
+        url: (gene: string) => `https://search.cancervariants.org/?searchTerm=%23${encodeURIComponent(gene)}` },
+      { id: "gepia", label: "GP", name: "GEPIA", color: "text-cyan-600 hover:text-cyan-700", 
+        url: (gene: string) => `http://gepia.cancer-pku.cn/detail.php?gene=${encodeURIComponent(gene)}` },
+      { id: "cansar", label: "CS", name: "canSAR", color: "text-pink-500 hover:text-pink-600", 
+        url: (gene: string) => `https://cansar.ai/search?q=${encodeURIComponent(gene)}` },
+    ],
+  },
+  {
+    name: "Drug",
+    color: "text-purple-600",
+    databases: [
+      { id: "dgidb", label: "DG", name: "DGIdb", color: "text-purple-500 hover:text-purple-600", 
+        url: (gene: string) => `https://beta.dgidb.org/results?searchType=gene&searchTerms=${encodeURIComponent(gene)}` },
+      { id: "gdsc", label: "RX", name: "Cancer Rx Gene", color: "text-orange-500 hover:text-orange-600", 
+        url: (gene: string) => `https://www.cancerrxgene.org/search?query=${encodeURIComponent(gene)}` },
+    ],
+  },
+];
+
+const GeneLinks = ({ gene }: { gene: string }) => {
+  return (
+    <TooltipProvider>
+      <div className="inline-flex items-center gap-1">
+        <span className="font-mono text-sm">{gene}</span>
+        <Popover>
+          <PopoverTrigger asChild>
+            <button
+              className="inline-flex items-center justify-center w-5 h-5 rounded hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <ExternalLink className="w-3.5 h-3.5" />
+            </button>
+          </PopoverTrigger>
+          <PopoverContent 
+            side="right" 
+            align="start" 
+            className="w-auto p-3 bg-popover border border-border shadow-lg"
+          >
+            <div className="space-y-3">
+              <p className="text-xs font-medium text-muted-foreground">
+                External databases for <span className="font-mono text-foreground">{gene}</span>
+              </p>
+              {geneDbCategories.map((category) => (
+                <div key={category.name} className="space-y-1.5">
+                  <p className={cn("text-[10px] font-semibold uppercase tracking-wider", category.color)}>
+                    {category.name}
+                  </p>
+                  <div className="flex flex-wrap gap-1">
+                    {category.databases.map((db) => (
+                      <Tooltip key={db.id}>
+                        <TooltipTrigger asChild>
+                          <a
+                            href={db.url(gene)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className={cn(
+                              "inline-flex items-center justify-center px-2 py-1 rounded text-[10px] font-bold hover:bg-muted transition-colors border border-border/50",
+                              db.color
+                            )}
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            {db.label}
+                          </a>
+                        </TooltipTrigger>
+                        <TooltipContent side="top" className="text-xs">
+                          {db.name}
+                        </TooltipContent>
+                      </Tooltip>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </PopoverContent>
+        </Popover>
+      </div>
+    </TooltipProvider>
+  );
+};
 
 interface FeatureDetailsSectionProps {
   runs: { name: string; data: MLResults }[];
@@ -269,7 +385,7 @@ export function FeatureDetailsSection({
               <TableBody>
                 {topFeatures.map((row) => (
                   <TableRow key={row.feature}>
-                    <TableCell className="font-mono text-sm">{row.feature}</TableCell>
+                    <TableCell><GeneLinks gene={row.feature} /></TableCell>
                     {row.ranks.map((rank, idx) => (
                       <TableCell key={idx} className="text-center">
                         {rank !== null ? (
@@ -371,7 +487,7 @@ export function FeatureDetailsSection({
                       {sig.features.slice(0, 20).map((f) => (
                         <TableRow key={f.feature}>
                           <TableCell className="text-xs text-muted-foreground">{f.rank}</TableCell>
-                          <TableCell className="font-mono text-xs">{f.feature}</TableCell>
+                          <TableCell><GeneLinks gene={f.feature} /></TableCell>
                           <TableCell className="text-right font-mono text-xs">
                             {f.importance !== null 
                               ? (f.importance < 0.001 ? f.importance.toExponential(2) : f.importance.toFixed(4))
