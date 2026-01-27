@@ -14,6 +14,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Download, FileText, Loader2, User, Search } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import type { MLResults, ProfileRanking, PerGeneSurvival, ModelRiskScoreSurvival } from "@/types/ml-results";
+import { buildSingleRunROCSVG, buildClinicalKMSVG } from "@/utils/chartToSvg";
 
 interface ClinicalReportExportProps {
   data: MLResults;
@@ -395,6 +396,49 @@ export function ClinicalReportExport({ data }: ClinicalReportExportProps) {
       </table>
 `;
         }
+      }
+
+      // Visualizations Section - ROC and KM with patient marker
+      const rocSvg = buildSingleRunROCSVG(data);
+      
+      // Determine patient risk group based on ensemble probability
+      const patientProb = patient.ensemble_probability || patient.confidence || 0;
+      const patientRiskGroup: "high" | "low" = patientProb >= 0.5 ? "high" : "low";
+      
+      // Use actual patient survival time and event data if available
+      const patientSurvTime = patient.surv_time;
+      const patientSurvEvent = patient.surv_event !== undefined ? patient.surv_event === 1 : undefined;
+      const hasPatientSurvival = patientSurvTime !== undefined && patientSurvTime > 0;
+      
+      const kmSvg = survivalData && modelSurvivalData.length > 0 
+        ? buildClinicalKMSVG(
+            data, 
+            hasPatientSurvival ? patientSurvTime : undefined, 
+            hasPatientSurvival ? patientSurvEvent : undefined, 
+            patientRiskGroup
+          ) 
+        : null;
+
+      html += `
+      <h2>📊 Performance Visualizations</h2>
+      <h3 style="margin-top: 1rem;">ROC Curves - All Models</h3>
+      <div style="text-align: center; margin: 1rem 0;">
+        ${rocSvg}
+      </div>
+`;
+
+      if (kmSvg) {
+        const survivalNote = hasPatientSurvival 
+          ? `Time: ${patientSurvTime.toFixed(1)}, ${patientSurvEvent ? "Event occurred" : "Censored"}`
+          : `Risk group based on ensemble probability of ${(patientProb * 100).toFixed(1)}%`;
+        html += `
+      <h3 style="margin-top: 1.5rem;">Survival Curves - Patient Risk Group: <span style="color: ${patientRiskGroup === 'high' ? '#dc2626' : '#16a34a'}; font-weight: 700;">${patientRiskGroup.toUpperCase()}</span></h3>
+      <p style="font-size: 0.875rem; color: #6b7280; margin-bottom: 0.5rem;">${survivalNote}</p>
+      ${hasPatientSurvival ? `<p style="font-size: 0.75rem; color: #6b7280; margin-bottom: 0.5rem;">Patient marker shown on curve: ${patientSurvEvent ? "▲ (event)" : "● (censored)"}</p>` : ""}
+      <div style="text-align: center; margin: 1rem 0;">
+        ${kmSvg}
+      </div>
+`;
       }
 
       html += `
