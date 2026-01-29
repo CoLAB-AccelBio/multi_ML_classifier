@@ -1582,6 +1582,93 @@ rank_profiles <- function(X, y, models, config, sample_ids = NULL, annotation = 
   return(ranking)
 }
 
+# A more robust ranking builder that does NOT re-predict per-model probabilities.
+# This avoids failures when some models were trained on scaled data but predictions
+# are attempted on unscaled matrices (common source of empty Rankings/Risk Scores
+# in the exported JSON).
+build_profile_ranking <- function(
+  y,
+  probabilities,
+  predicted_class,
+  config,
+  sample_ids = NULL,
+  annotation = NULL,
+  model_name = "soft_vote"
+) {
+  log_message("Building profile ranking (Rankings/Risk Scores export)...")
+
+  if (is.null(probabilities) || length(probabilities) == 0) {
+    log_message("No probabilities available to build profile ranking", "WARN")
+    return(NULL)
+  }
+
+  n <- length(probabilities)
+  if (length(y) != n) {
+    log_message(sprintf("Ranking length mismatch: y=%d, probs=%d", length(y), n), "WARN")
+    n <- min(length(y), n)
+    probabilities <- probabilities[1:n]
+    y <- y[1:n]
+    if (!is.null(predicted_class)) predicted_class <- predicted_class[1:n]
+    if (!is.null(sample_ids)) sample_ids <- sample_ids[1:n]
+  }
+
+  class_levels <- levels(y)
+  pos_class <- class_levels[2]
+  neg_class <- class_levels[1]
+
+  pred <- if (!is.null(predicted_class)) {
+    as.character(predicted_class)
+  } else {
+    ifelse(probabilities > 0.5, pos_class, neg_class)
+  }
+
+  # For consistency with full-training JSON: class_0=(1-prob), class_1=prob
+  risk_score_class_1 <- as.numeric(probabilities) * 100
+  risk_score_class_0 <- (1 - as.numeric(probabilities)) * 100
+  confidence <- abs(as.numeric(probabilities) - 0.5) * 2
+
+  ranking <- data.frame(
+    sample_index = 1:n,
+    sample_id = if (!is.null(sample_ids) && length(sample_ids) >= n) sample_ids[1:n] else paste0("Sample_", 1:n),
+    actual_class = as.character(y),
+    ensemble_probability = as.numeric(probabilities),
+    predicted_class = pred,
+    confidence = confidence,
+    correct = pred == as.character(y),
+    risk_score_class_0 = round(risk_score_class_0, 2),
+    risk_score_class_1 = round(risk_score_class_1, 2),
+    stringsAsFactors = FALSE
+  )
+
+  # Add survival columns (optional)
+  if (!is.null(annotation) && !is.null(config$time_variable) && !is.null(config$event_variable)) {
+    time_col <- config$time_variable
+    event_col <- config$event_variable
+
+    if (time_col %in% colnames(annotation) && event_col %in% colnames(annotation)) {
+      annot_sample_col <- colnames(annotation)[1]
+      surv_lookup <- data.frame(
+        sample_id = annotation[[annot_sample_col]],
+        surv_time = suppressWarnings(as.numeric(as.character(annotation[[time_col]]))),
+        surv_event = suppressWarnings(as.numeric(as.character(annotation[[event_col]]))),
+        stringsAsFactors = FALSE
+      )
+
+      ranking$surv_time <- surv_lookup$surv_time[match(ranking$sample_id, surv_lookup$sample_id)]
+      ranking$surv_event <- surv_lookup$surv_event[match(ranking$sample_id, surv_lookup$sample_id)]
+    }
+  }
+
+  ranking <- ranking[order(-ranking$confidence), ]
+  ranking$rank <- 1:nrow(ranking)
+
+  top_n <- ceiling(nrow(ranking) * (config$top_percent / 100))
+  ranking$top_profile <- ranking$rank <= top_n
+
+  attr(ranking, "model_name") <- model_name
+  ranking
+}
+
 # =============================================================================
 # RESULTS AGGREGATION
 # =============================================================================
@@ -2093,7 +2180,7 @@ perform_survival_analysis <- function(expr_data, annotation, time_col, event_col
 #' @param time_col Time-to-event column name
 #' @param event_col Event status column name
 #' @return List with model-specific survival results
-perform_model_risk_survival <- function(rankings, annotation, time_col, event_col, sample_ids) {
+perform_model_risk_survival <- function(rankings, annotation, time_col, event_col, sample_ids, model_name = "soft_vote") {
   if (!survival_available) return(NULL)
   if (is.null(rankings) || nrow(rankings) == 0) return(NULL)
   
@@ -2195,7 +2282,7 @@ perform_model_risk_survival <- function(rankings, annotation, time_col, event_co
     }
     
     list(
-      model = "ensemble",
+      model = as.character(model_name),
       stats = list(
         logrank_p = as.numeric(logrank_p),
         cox_hr = as.numeric(cox_hr),
@@ -2252,12 +2339,16 @@ run_survival_analysis <- function(X, y, sample_ids, ranking, config, annotation,
   )
   
   # Model risk score survival analysis
+  model_name <- attr(ranking, "model_name")
+  if (is.null(model_name) || model_name == "") model_name <- "soft_vote"
+
   model_risk <- perform_model_risk_survival(
     rankings = ranking,
     annotation = annotation,
     time_col = config$time_variable,
     event_col = config$event_variable,
-    sample_ids = sample_ids
+    sample_ids = sample_ids,
+    model_name = model_name
   )
   
   if (is.null(per_gene) && is.null(model_risk)) {
@@ -2265,11 +2356,17 @@ run_survival_analysis <- function(X, y, sample_ids, ranking, config, annotation,
     return(NULL)
   }
   
+  model_risk_scores <- if (!is.null(model_risk) && !is.null(model_risk$model)) {
+    setNames(list(model_risk), model_risk$model)
+  } else {
+    NULL
+  }
+
   result <- list(
     time_variable = config$time_variable,
     event_variable = config$event_variable,
     per_gene = if (!is.null(per_gene)) per_gene$per_gene else NULL,
-    model_risk_scores = if (!is.null(model_risk)) list(model_risk) else NULL
+    model_risk_scores = model_risk_scores
   )
   
   log_message("Survival analysis completed")
@@ -2453,15 +2550,18 @@ run_pipeline <- function(config) {
   
   permutation_results <- run_permutation_test(if (config$scale_data) data$X_scaled else data$X_raw, data$y, config, selected_features)
   
-  # Profile ranking
+  # Profile ranking / final predictions
   log_message(paste(rep("=", 60), collapse = ""))
   log_message("PROFILE RANKING")
   
-  ranking <- rank_profiles(X_selected, data$y, final_models, config, sample_ids = data$sample_ids, annotation = data$annotation)
-  
-  # Generate final predictions
-  final_predictions <- ranking$predicted_class
-  final_probabilities <- ranking$ensemble_probability
+  # NOTE: In CV mode, re-predicting per-model probabilities here can fail when
+  # some models were trained on scaled matrices but predictions are attempted on
+  # unscaled data (leading to empty Rankings/Risk Scores in the JSON).
+  # We therefore build the ranking from the *final* probabilities we already
+  # compute below.
+  ranking <- NULL
+  final_predictions <- NULL
+  final_probabilities <- NULL
   final_model_used <- "ensemble"
   
   if (!use_ensemble && !is.null(best_model)) {
@@ -2485,6 +2585,70 @@ run_pipeline <- function(config) {
   if (use_ensemble) {
     final_model_used <- if (use_soft) "soft_vote" else "hard_vote"
   }
+
+  # If we selected an ensemble strategy, compute final predictions/probabilities
+  # directly from the final models (trained on X_selected) using the same
+  # hard/soft voting logic as in CV.
+  if (use_ensemble && (is.null(final_predictions) || is.null(final_probabilities))) {
+    preds <- list()
+    probs <- list()
+
+    if (!is.null(final_models$rf)) {
+      res <- predict_rf(final_models$rf, X_selected)
+      preds$rf <- res$predictions
+      probs$rf <- res$probabilities
+    }
+    if (!is.null(final_models$svm)) {
+      res <- predict_svm(final_models$svm, X_selected)
+      preds$svm <- res$predictions
+      probs$svm <- res$probabilities
+    }
+    if (!is.null(final_models$xgboost)) {
+      res <- predict_xgboost(final_models$xgboost, X_selected)
+      preds$xgboost <- res$predictions
+      probs$xgboost <- res$probabilities
+    }
+    if (!is.null(final_models$knn)) {
+      res <- predict_knn(final_models$knn, X_selected)
+      preds$knn <- res$predictions
+      probs$knn <- res$probabilities
+    }
+    if (!is.null(final_models$mlp)) {
+      res <- predict_mlp(final_models$mlp, X_selected)
+      preds$mlp <- res$predictions
+      probs$mlp <- res$probabilities
+    }
+
+    valid_pred_names <- names(preds)[sapply(names(preds), function(m) {
+      is_valid_prediction(preds[[m]], data$y)
+    })]
+    valid_prob_names <- names(probs)[sapply(names(probs), function(m) {
+      !is.null(probs[[m]]) && length(probs[[m]]) == length(data$y) && length(unique(probs[[m]])) > 1
+    })]
+
+    if (final_model_used == "soft_vote" && length(valid_prob_names) >= 2) {
+      weights <- rep(1 / length(valid_prob_names), length(valid_prob_names))
+      soft_res <- soft_voting(probabilities_list = probs[valid_prob_names], weights = weights)
+      final_predictions <- soft_res$predictions
+      final_probabilities <- soft_res$probabilities
+    } else if (final_model_used == "hard_vote" && length(valid_pred_names) >= 2) {
+      final_predictions <- hard_voting(preds[valid_pred_names])
+      # No probabilities for hard vote; approximate using mean prob if available
+      if (length(valid_prob_names) >= 1) {
+        final_probabilities <- as.numeric(rowMeans(do.call(cbind, probs[valid_prob_names]), na.rm = TRUE))
+      }
+    }
+  }
+
+  ranking <- build_profile_ranking(
+    y = data$y,
+    probabilities = final_probabilities,
+    predicted_class = final_predictions,
+    config = config,
+    sample_ids = data$sample_ids,
+    annotation = data$annotation,
+    model_name = final_model_used
+  )
   
   # Clustering exports (PCA, t-SNE, UMAP)
   log_message(paste(rep("=", 60), collapse = ""))
