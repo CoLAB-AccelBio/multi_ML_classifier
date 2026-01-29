@@ -156,8 +156,8 @@ export function SurvivalAnalysisTab({ data }: SurvivalAnalysisTabProps) {
         hr_upper: gene.cox_hr_upper,
         p_value: gene.cox_p,
         significant: gene.cox_p < 0.05,
-        errorLower: gene.cox_hr - gene.cox_hr_lower,
-        errorUpper: gene.cox_hr_upper - gene.cox_hr,
+        // ErrorBar expects [lowerDelta, upperDelta] array for symmetric/asymmetric error display
+        error: [gene.cox_hr - gene.cox_hr_lower, gene.cox_hr_upper - gene.cox_hr],
       }));
   }, [sortedGenes]);
 
@@ -339,11 +339,10 @@ export function SurvivalAnalysisTab({ data }: SurvivalAnalysisTabProps) {
                       />
                     ))}
                     <ErrorBar
-                      dataKey="errorUpper"
+                      dataKey="error"
                       width={4}
                       strokeWidth={1.5}
                       stroke="hsl(var(--foreground))"
-                      direction="x"
                     />
                   </Bar>
                 </BarChart>
