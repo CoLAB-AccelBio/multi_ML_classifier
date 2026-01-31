@@ -235,6 +235,42 @@ const Index = () => {
           </div>
         </div>
 
+        {/* CV vs Full Training Comparison */}
+        <div className="max-w-3xl mx-auto mb-16">
+          <h2 className="text-2xl font-semibold text-center mb-6">CV vs Full Training Mode</h2>
+          <div className="bg-card/50 backdrop-blur-sm rounded-xl border border-border overflow-hidden">
+            <div className="grid grid-cols-3 text-sm">
+              <div className="p-4 font-medium bg-muted/30 border-b border-border">Feature</div>
+              <div className="p-4 font-medium bg-primary/10 border-b border-border text-center">Cross-Validation</div>
+              <div className="p-4 font-medium bg-secondary/10 border-b border-border text-center">Full Training</div>
+              
+              <div className="p-4 border-b border-border text-muted-foreground">Data Usage</div>
+              <div className="p-4 border-b border-border text-center">K-fold splits (e.g., 80/20)</div>
+              <div className="p-4 border-b border-border text-center">100% of samples</div>
+              
+              <div className="p-4 border-b border-border text-muted-foreground">Primary Purpose</div>
+              <div className="p-4 border-b border-border text-center">Performance estimation</div>
+              <div className="p-4 border-b border-border text-center">Final model deployment</div>
+              
+              <div className="p-4 border-b border-border text-muted-foreground">Metrics Provided</div>
+              <div className="p-4 border-b border-border text-center">Mean ± SD across folds</div>
+              <div className="p-4 border-b border-border text-center">Single training metrics</div>
+              
+              <div className="p-4 border-b border-border text-muted-foreground">Feature Stability</div>
+              <div className="p-4 border-b border-border text-center">Per-fold selection counts</div>
+              <div className="p-4 border-b border-border text-center">Single feature set</div>
+              
+              <div className="p-4 border-b border-border text-muted-foreground">Best For</div>
+              <div className="p-4 border-b border-border text-center">Research & publication</div>
+              <div className="p-4 border-b border-border text-center">Clinical application</div>
+              
+              <div className="p-4 text-muted-foreground">New Sample Prediction</div>
+              <div className="p-4 text-center">Not recommended</div>
+              <div className="p-4 text-center font-medium text-primary">✓ Recommended</div>
+            </div>
+          </div>
+        </div>
+
         <div className="max-w-4xl mx-auto">
           <h2 className="text-2xl font-semibold text-center mb-8">Workflow</h2>
           <div className="grid md:grid-cols-4 gap-4">
