@@ -110,6 +110,11 @@ option_list <- list(
               default = 5,
               help = "Number of repeats of CV [default: %default]"),
   
+  make_option(c("--train_ratio"),
+              type = "double",
+              default = NULL,
+              help = "Training set ratio (0.5-0.9). Overrides n_folds for split calculation. E.g., 0.7 = 70%% training, 30%% testing [default: calculated from n_folds]"),
+  
   make_option(c("-p", "--n_permutations"),
               type = "integer",
               default = 100,
@@ -161,6 +166,7 @@ config <- list(
   n_folds = 5,
   n_repeats = 10,
   top_percent = 10,
+  train_ratio = NULL,  # Training set ratio (0.5-0.9). If set, overrides n_folds for split calculation
   
   # Feature selection
   feature_selection_method = "stepwise",  # "forward", "backward", "stepwise", "none"
@@ -215,6 +221,13 @@ if (!is.null(opt$seed)) config$seed <- opt$seed
 if (!is.null(opt$n_folds)) config$n_folds <- opt$n_folds
 if (!is.null(opt$n_repeats)) config$n_repeats <- opt$n_repeats
 if (!is.null(opt$n_permutations)) config$n_permutations <- opt$n_permutations
+if (!is.null(opt$train_ratio)) {
+  # Validate train_ratio is between 0.5 and 0.9
+  if (opt$train_ratio < 0.5 || opt$train_ratio > 0.9) {
+    stop("train_ratio must be between 0.5 and 0.9")
+  }
+  config$train_ratio <- opt$train_ratio
+}
 if (!is.null(opt$time)) config$time_variable <- opt$time
 if (!is.null(opt$event)) config$event_variable <- opt$event
 
@@ -499,16 +512,24 @@ load_data <- function(config) {
   }
   
   # Store preprocessing stats before modifications
-  # Calculate train/test split info based on config (will be updated later with actual config)
+  # Calculate train/test split info based on config
   n_folds <- if (!is.null(config$n_folds)) config$n_folds else 5
   n_repeats <- if (!is.null(config$n_repeats)) config$n_repeats else 3
-  test_per_fold <- ceiling(length(sample_ids) / n_folds)
-  train_per_fold <- length(sample_ids) - test_per_fold
+  
+  # Determine effective training ratio: use train_ratio if specified, otherwise calculate from n_folds
+  effective_train_ratio <- if (!is.null(config$train_ratio)) {
+    config$train_ratio
+  } else {
+    (n_folds - 1) / n_folds  # e.g., 5-fold = 80% training
+  }
+  
+  train_per_fold <- round(length(sample_ids) * effective_train_ratio)
+  test_per_fold <- length(sample_ids) - train_per_fold
   
   # Calculate approximate class distribution per fold (stratified)
   class_table <- table(y)
-  train_class_dist <- as.list(round(class_table * (n_folds - 1) / n_folds))
-  test_class_dist <- as.list(ceiling(class_table / n_folds))
+  train_class_dist <- as.list(round(class_table * effective_train_ratio))
+  test_class_dist <- as.list(round(class_table * (1 - effective_train_ratio)))
   
   preprocessing_stats <- list(
     original_samples = length(sample_ids),
@@ -519,6 +540,7 @@ load_data <- function(config) {
     constant_features_removed = 0,
     cv_folds = n_folds,
     cv_repeats = n_repeats,
+    train_ratio = effective_train_ratio,
     train_samples_per_fold = train_per_fold,
     test_samples_per_fold = test_per_fold,
     train_class_distribution = train_class_dist,
@@ -1006,12 +1028,19 @@ run_cv_all_methods <- function(X_raw, X_scaled, y, config, selected_features = N
   folds <- list()
   fold_id <- 1
   
+  # Determine training ratio: use train_ratio if specified, otherwise calculate from n_folds
+  effective_train_ratio <- if (!is.null(config$train_ratio)) {
+    config$train_ratio
+  } else {
+    (config$n_folds - 1) / config$n_folds  # e.g., 5-fold = 80% training
+  }
+  
   for (r in seq_len(config$n_repeats)) {
-    strat_folds <- createFolds(y, k = config$n_folds, returnTrain = TRUE)
-    for (f in seq_along(strat_folds)) {
-      folds[[fold_id]] <- strat_folds[[f]]
-      fold_id <- fold_id + 1
-    }
+    # Use createDataPartition for stratified sampling with custom ratio
+    set.seed(config$seed + r)  # Different seed per repeat for variation
+    train_indices <- createDataPartition(y, p = effective_train_ratio, list = FALSE)
+    folds[[fold_id]] <- as.vector(train_indices)
+    fold_id <- fold_id + 1
   }
   
   
@@ -1027,7 +1056,8 @@ run_cv_all_methods <- function(X_raw, X_scaled, y, config, selected_features = N
   # Collect per-fold importance for stability analysis
   fold_importance <- list()
   
-  log_message(sprintf("Running %d-fold CV with %d repeats", config$n_folds, config$n_repeats))
+  log_message(sprintf("Running CV with %.0f%% training / %.0f%% testing, %d repeats", 
+                      effective_train_ratio * 100, (1 - effective_train_ratio) * 100, config$n_repeats))
   n_folds_total <- length(folds)
   
   for (i in seq_along(folds)) {

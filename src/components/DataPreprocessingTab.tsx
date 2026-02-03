@@ -182,64 +182,71 @@ export function DataPreprocessingTab({ data }: DataPreprocessingTabProps) {
                   </div>
                 </div>
               </div>
-            ) : preprocessing.cv_folds ? (
+            ) : preprocessing.cv_folds || preprocessing.train_ratio ? (
               <div className="bg-gradient-to-r from-primary/10 via-secondary/10 to-accent/10 rounded-xl p-6 border border-primary/20">
                 <h4 className="font-semibold flex items-center gap-2 mb-3">
                   <GitBranch className="w-4 h-4 text-primary" />
                   Training vs Testing Data Split Summary
                 </h4>
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                  <div className="bg-primary/20 rounded-lg p-4 text-center">
-                    <p className="text-xs text-muted-foreground mb-1">Training Data</p>
-                    <p className="text-3xl font-bold text-primary">
-                      {(((preprocessing.cv_folds - 1) / preprocessing.cv_folds) * 100).toFixed(0)}%
-                    </p>
-                    <p className="text-sm text-muted-foreground">
-                      ~{preprocessing.train_samples_per_fold || Math.floor(preprocessing.original_samples * (preprocessing.cv_folds - 1) / preprocessing.cv_folds)} samples/fold
-                    </p>
-                    {preprocessing.train_class_distribution && (
-                      <p className="text-xs text-muted-foreground mt-1 font-mono">
-                        ({Object.entries(preprocessing.train_class_distribution).map(([cls, count]) => 
-                          `${cls}:${count}`
-                        ).join(' / ')})
-                      </p>
-                    )}
-                  </div>
-                  <div className="bg-secondary/20 rounded-lg p-4 text-center">
-                    <p className="text-xs text-muted-foreground mb-1">Testing Data</p>
-                    <p className="text-3xl font-bold text-secondary">
-                      {((1 / preprocessing.cv_folds) * 100).toFixed(0)}%
-                    </p>
-                    <p className="text-sm text-muted-foreground">
-                      ~{preprocessing.test_samples_per_fold || Math.ceil(preprocessing.original_samples / preprocessing.cv_folds)} samples/fold
-                    </p>
-                    {preprocessing.test_class_distribution && (
-                      <p className="text-xs text-muted-foreground mt-1 font-mono">
-                        ({Object.entries(preprocessing.test_class_distribution).map(([cls, count]) => 
-                          `${cls}:${count}`
-                        ).join(' / ')})
-                      </p>
-                    )}
-                  </div>
-                  <div className="bg-accent/20 rounded-lg p-4 text-center">
-                    <p className="text-xs text-muted-foreground mb-1">Total CV Iterations</p>
-                    <p className="text-3xl font-bold text-accent">
-                      {preprocessing.cv_folds * (preprocessing.cv_repeats || 1)}
-                    </p>
-                    <p className="text-sm text-muted-foreground">
-                      {preprocessing.cv_folds} folds × {preprocessing.cv_repeats || 1} repeats
-                    </p>
-                  </div>
-                  <div className="bg-info/20 rounded-lg p-4 text-center">
-                    <p className="text-xs text-muted-foreground mb-1">Validation Ratio</p>
-                    <p className="text-3xl font-bold text-info">
-                      {(preprocessing.cv_folds - 1)}:1
-                    </p>
-                    <p className="text-sm text-muted-foreground">
-                      Train : Test per fold
-                    </p>
-                  </div>
-                </div>
+                {(() => {
+                  // Use train_ratio if available, otherwise calculate from cv_folds
+                  const trainRatio = preprocessing.train_ratio ?? 
+                    (preprocessing.cv_folds ? (preprocessing.cv_folds - 1) / preprocessing.cv_folds : 0.8);
+                  const testRatio = 1 - trainRatio;
+                  const trainPct = (trainRatio * 100).toFixed(0);
+                  const testPct = (testRatio * 100).toFixed(0);
+                  
+                  return (
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                      <div className="bg-primary/20 rounded-lg p-4 text-center">
+                        <p className="text-xs text-muted-foreground mb-1">Training Data</p>
+                        <p className="text-3xl font-bold text-primary">{trainPct}%</p>
+                        <p className="text-sm text-muted-foreground">
+                          ~{preprocessing.train_samples_per_fold || Math.round(preprocessing.original_samples * trainRatio)} samples/fold
+                        </p>
+                        {preprocessing.train_class_distribution && (
+                          <p className="text-xs text-muted-foreground mt-1 font-mono">
+                            ({Object.entries(preprocessing.train_class_distribution).map(([cls, count]) => 
+                              `${cls}:${count}`
+                            ).join(' / ')})
+                          </p>
+                        )}
+                      </div>
+                      <div className="bg-secondary/20 rounded-lg p-4 text-center">
+                        <p className="text-xs text-muted-foreground mb-1">Testing Data</p>
+                        <p className="text-3xl font-bold text-secondary">{testPct}%</p>
+                        <p className="text-sm text-muted-foreground">
+                          ~{preprocessing.test_samples_per_fold || Math.round(preprocessing.original_samples * testRatio)} samples/fold
+                        </p>
+                        {preprocessing.test_class_distribution && (
+                          <p className="text-xs text-muted-foreground mt-1 font-mono">
+                            ({Object.entries(preprocessing.test_class_distribution).map(([cls, count]) => 
+                              `${cls}:${count}`
+                            ).join(' / ')})
+                          </p>
+                        )}
+                      </div>
+                      <div className="bg-accent/20 rounded-lg p-4 text-center">
+                        <p className="text-xs text-muted-foreground mb-1">Total CV Iterations</p>
+                        <p className="text-3xl font-bold text-accent">
+                          {preprocessing.cv_repeats || 1}
+                        </p>
+                        <p className="text-sm text-muted-foreground">
+                          repeats
+                        </p>
+                      </div>
+                      <div className="bg-info/20 rounded-lg p-4 text-center">
+                        <p className="text-xs text-muted-foreground mb-1">Split Ratio</p>
+                        <p className="text-3xl font-bold text-info">
+                          {trainPct}:{testPct}
+                        </p>
+                        <p className="text-sm text-muted-foreground">
+                          Train : Test
+                        </p>
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
             ) : null}
           </CardContent>
