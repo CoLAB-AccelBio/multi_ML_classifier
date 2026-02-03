@@ -2640,6 +2640,33 @@ run_pipeline <- function(config) {
     }
   }
 
+  # ============================================================================
+  # FALLBACK: If no ensemble/voting worked, use best single model for ranking
+  # ============================================================================
+  if (is.null(final_probabilities) || length(final_probabilities) == 0) {
+    log_message("No ensemble probabilities available, attempting single model fallback for ranking...", "WARN")
+    
+    # Try each model in order of preference
+    fallback_models <- c("rf", "svm", "xgboost", "knn", "mlp")
+    for (fb_model in fallback_models) {
+      if (!is.null(final_models[[fb_model]])) {
+        tryCatch({
+          pred_fun <- get(paste0("predict_", fb_model))
+          fb_res <- pred_fun(final_models[[fb_model]], X_selected)
+          if (!is.null(fb_res$probabilities) && length(fb_res$probabilities) == nrow(X_selected)) {
+            final_probabilities <- fb_res$probabilities
+            final_predictions <- fb_res$predictions
+            final_model_used <- fb_model
+            log_message(sprintf("Using %s as fallback for profile ranking", toupper(fb_model)))
+            break
+          }
+        }, error = function(e) {
+          log_message(sprintf("Fallback %s failed: %s", fb_model, e$message), "WARN")
+        })
+      }
+    }
+  }
+
   ranking <- build_profile_ranking(
     y = data$y,
     probabilities = final_probabilities,
