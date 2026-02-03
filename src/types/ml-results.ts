@@ -211,6 +211,7 @@ export interface PreprocessingStats {
   // Train/Test split info (for CV mode)
   cv_folds?: number;
   cv_repeats?: number;
+  train_ratio?: number;  // Training set ratio (0.5-0.9)
   train_samples_per_fold?: number;
   test_samples_per_fold?: number;
   train_class_distribution?: Record<string, number>;
