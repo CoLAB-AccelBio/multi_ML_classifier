@@ -45,17 +45,52 @@ export function PermutationDistributionTab({ data }: PermutationDistributionTabP
   const [selectedMetric, setSelectedMetric] = useState<"auroc" | "accuracy">("auroc");
   const [selectedModel, setSelectedModel] = useState<string>("rf");
 
-  if (!permDist || Object.keys(permDist).length === 0) {
+  // Check for both permutation and actual distributions
+  const hasPermDist = permDist && Object.keys(permDist).length > 0;
+  const hasActualDist = data.actual_distributions && Object.keys(data.actual_distributions).length > 0;
+
+  if (!hasPermDist) {
     return (
       <Card>
         <CardHeader>
           <CardTitle>Permutation Distribution Analysis</CardTitle>
         </CardHeader>
-        <CardContent>
+        <CardContent className="space-y-4">
           <p className="text-sm text-muted-foreground">
-            No permutation distribution data available. Re-run the R script with the updated exporter
-            to include per-model AUROC and Accuracy distributions from actual vs permuted data.
+            No permutation distribution data available in this analysis file.
           </p>
+          <div className="bg-muted/30 rounded-lg p-4 text-sm space-y-2">
+            <p className="font-medium">This data is generated when:</p>
+            <ul className="list-disc list-inside text-muted-foreground space-y-1">
+              <li>Running the <strong>Cross-Validation (CV) script</strong> (not Full Training mode)</li>
+              <li>The script includes permutation testing during the analysis</li>
+            </ul>
+            <p className="text-xs text-muted-foreground mt-3">
+              Re-run the CV R script to generate distribution comparisons between actual and permuted data.
+            </p>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (!hasActualDist) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Permutation Distribution Analysis</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <p className="text-sm text-muted-foreground">
+            Permutation data found, but <strong>actual distributions</strong> are missing.
+          </p>
+          <div className="bg-warning/10 border border-warning/30 rounded-lg p-4 text-sm space-y-2">
+            <p className="font-medium text-warning">Partial Data Available</p>
+            <p className="text-muted-foreground">
+              The analysis contains permuted (null) distributions but no actual CV-fold distributions for comparison.
+              This may indicate the R script needs to be updated to export <code className="bg-muted px-1 rounded">actual_distributions</code>.
+            </p>
+          </div>
         </CardContent>
       </Card>
     );

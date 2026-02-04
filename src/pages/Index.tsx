@@ -6,8 +6,10 @@ import { ThemeToggle } from "@/components/ThemeToggle";
 import { ComparisonUploader } from "@/components/ComparisonUploader";
 import { ComparisonDashboard } from "@/components/ComparisonDashboard";
 import { DemoDataDownload } from "@/components/DemoDataDownload";
-import { Brain, Download, FileCode2, Sparkles, Play, GitCompare, Plus, Info, Database, Target, BarChart3, Layers, Beaker, UserPlus, Check, X } from "lucide-react";
+import { TrainRatioSelector } from "@/components/TrainRatioSelector";
+import { Brain, Download, FileCode2, Sparkles, Play, GitCompare, Plus, Info, Database, Target, BarChart3, Layers, Beaker, UserPlus, Check, X, Settings2 } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import accelBioLogo from "@/assets/accelbio-logo.png";
 import type { MLResults } from "@/types/ml-results";
 import { demoData } from "@/data/demoData";
@@ -175,6 +177,21 @@ const Index = () => {
               Compare Runs
             </Button>
           </div>
+
+          {/* Train Ratio Selector - Collapsible */}
+          <Collapsible className="max-w-sm mx-auto">
+            <CollapsibleTrigger asChild>
+              <Button variant="ghost" size="sm" className="gap-2 text-muted-foreground hover:text-foreground">
+                <Settings2 className="w-4 h-4" />
+                CV Script Options
+              </Button>
+            </CollapsibleTrigger>
+            <CollapsibleContent className="mt-4">
+              <div className="bg-card/50 backdrop-blur-sm rounded-xl p-4 border border-border">
+                <TrainRatioSelector />
+              </div>
+            </CollapsibleContent>
+          </Collapsible>
         </div>
 
         {viewMode === "comparison" ? (

@@ -20,9 +20,13 @@ interface ProfileRankingTableProps {
   topPercent: number;
 }
 
-const CLASS_NAMES: Record<string, string> = {
-  "0": "Negative",
-  "1": "Positive",
+// Helper to format class labels - show original value with optional friendly label
+const formatClassLabel = (classValue: string): string => {
+  // For binary 0/1 classes, add friendly context but keep original
+  if (classValue === "0") return "0 (Neg)";
+  if (classValue === "1") return "1 (Pos)";
+  // For other class values (e.g., "responder", "disease"), show as-is
+  return classValue;
 };
 
 const PAGE_SIZE = 50;
@@ -127,8 +131,8 @@ export function ProfileRankingTable({ rankings, topPercent }: ProfileRankingTabl
       const rows = filteredAndSorted.map(r => [
         r.rank,
         r.sample_id || `Sample_${r.sample_index}`,
-        CLASS_NAMES[r.actual_class] || r.actual_class,
-        CLASS_NAMES[r.predicted_class] || r.predicted_class,
+        r.actual_class,
+        r.predicted_class,
         (r.ensemble_probability * 100).toFixed(2),
         (r.confidence * 100).toFixed(2),
         r.risk_score_class_1 !== undefined ? r.risk_score_class_1.toFixed(2) : "",
@@ -316,12 +320,12 @@ export function ProfileRankingTable({ rankings, topPercent }: ProfileRankingTabl
                 <TableCell className="font-mono font-medium">{getSampleName(row)}</TableCell>
                 <TableCell>
                   <Badge variant={row.actual_class === "1" ? "default" : "outline"}>
-                    {CLASS_NAMES[row.actual_class] || row.actual_class}
+                    {formatClassLabel(row.actual_class)}
                   </Badge>
                 </TableCell>
                 <TableCell>
                   <Badge variant={row.predicted_class === "1" ? "default" : "outline"}>
-                    {CLASS_NAMES[row.predicted_class] || row.predicted_class}
+                    {formatClassLabel(row.predicted_class)}
                   </Badge>
                 </TableCell>
                 <TableCell className="font-mono">
