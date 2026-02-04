@@ -143,6 +143,13 @@ export function RiskScoreDistributionTab({ rankings }: RiskScoreDistributionTabP
   );
 }
 
+// Helper to format class labels - show original value with optional friendly context
+function formatClassLabel(classValue: string): string {
+  if (classValue === "0") return "Class 0 (Neg)";
+  if (classValue === "1") return "Class 1 (Pos)";
+  return `Class ${classValue}`;
+}
+
 // Helper function to compute boxplot statistics
 function computeBoxplotStats(
   sortedValues: number[], 
@@ -152,15 +159,10 @@ function computeBoxplotStats(
   const q1Idx = Math.floor(n * 0.25);
   const q3Idx = Math.floor(n * 0.75);
   const medIdx = Math.floor(n * 0.5);
-  
-  const classLabels: Record<string, string> = {
-    "0": "Negative",
-    "1": "Positive",
-  };
 
   return {
     class: cls,
-    classLabel: classLabels[cls] || `Class ${cls}`,
+    classLabel: formatClassLabel(cls),
     min: sortedValues[0],
     q1: sortedValues[q1Idx],
     median: n % 2 === 0 
