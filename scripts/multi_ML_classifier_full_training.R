@@ -512,10 +512,11 @@ train_all_models <- function(X_raw, X_scaled, y, config) {
   
   # SVM
   log_message("  Training SVM...")
-  gamma_val <- if (is.null(config$svm_gamma)) 1/ncol(X_raw) else config$svm_gamma
+  gamma_val <- if (is.null(config$svm_gamma)) 1/ncol(X_svm) else config$svm_gamma
   svm_model <- svm(x = X_svm, y = y, kernel = config$svm_kernel, 
                    cost = config$svm_cost, gamma = gamma_val, probability = TRUE)
-  svm_pred <- predict(svm_model, X_raw, probability = TRUE)
+  # CRITICAL: Predict on same data used for training (X_svm) to maintain alignment with y
+  svm_pred <- predict(svm_model, X_svm, probability = TRUE)
   svm_prob <- attr(svm_pred, "probabilities")[, levels(y)[2]]
   results$svm <- compute_metrics(svm_pred, y, svm_prob)
   results$svm$model <- svm_model
@@ -525,14 +526,15 @@ train_all_models <- function(X_raw, X_scaled, y, config) {
   y_numeric <- as.numeric(y) - 1
   xgb_matrix <- xgb.DMatrix(data = as.matrix(X_xgb), label = y_numeric)
   xgb_model <- xgb.train(
-    data = xgb_matrix,  # xgb_matrix should be created with label included
+    data = xgb_matrix,
     params = list(
       objective = "binary:logistic",
-      learning_rate = 0.3  # changed from 'eta'
+      learning_rate = 0.3
     ),
     nrounds = config$xgb_nrounds,
-    verbose = 0  # or remove this line
+    verbose = 0
   )
+  # CRITICAL: Predict on same matrix used for training to maintain alignment with y
   xgb_prob <- predict(xgb_model, xgb_matrix)
   xgb_pred <- factor(ifelse(xgb_prob > 0.5, levels(y)[2], levels(y)[1]), levels = levels(y))
   results$xgboost <- compute_metrics(xgb_pred, y, xgb_prob)
@@ -540,18 +542,20 @@ train_all_models <- function(X_raw, X_scaled, y, config) {
   
   # KNN
   log_message("  Training KNN...")
-  knn_pred <- knn(train = X_knn, test = X_raw, cl = y, k = config$knn_k, prob = TRUE)
+  # CRITICAL: Both train and test must use same scaling (X_knn) to maintain alignment with y
+  knn_pred <- knn(train = X_knn, test = X_knn, cl = y, k = config$knn_k, prob = TRUE)
   knn_prob <- attr(knn_pred, "prob")
   knn_prob <- ifelse(knn_pred == levels(y)[2], knn_prob, 1 - knn_prob)
   results$knn <- compute_metrics(knn_pred, y, knn_prob)
-  results$knn$model <- list(X_train = X_raw, y_train = y, k = config$knn_k)
+  results$knn$model <- list(X_train = X_knn, y_train = y, k = config$knn_k)
   
   # MLP
   log_message("  Training MLP...")
   y_mlp <- class.ind(y)
   mlp_model <- nnet(x = X_mlp, y = y_mlp, size = config$mlp_size,
                     decay = config$mlp_decay, maxit = config$mlp_maxit, trace = FALSE)
-  mlp_pred_mat <- predict(mlp_model, X_raw)
+  # CRITICAL: Predict on same data used for training (X_mlp) to maintain alignment with y
+  mlp_pred_mat <- predict(mlp_model, X_mlp)
   
   # Identify positive class (same convention as elsewhere)
   pos_class <- levels(y)[2]
